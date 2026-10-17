@@ -68,7 +68,9 @@ export function createApp(deps: Deps) {
   const authLimit = new Limiter(30, 10 * 60_000)
 
   const direct = (c: Context) => visitorOnMoshpit(SELF, c.req.header('host'), c.req.header('x-moshpit-name'))
-  const origin = (c: Context) => (direct(c) ? DIRECT_ORIGIN : RELAY_ORIGIN)
+  // nginx serves the Moshpit name on port 80 too, for clients that cannot check its certificate.
+  const https = (c: Context) => (c.req.header('x-forwarded-proto') ?? 'https') === 'https'
+  const origin = (c: Context) => (direct(c) && https(c) ? DIRECT_ORIGIN : RELAY_ORIGIN)
   const ip = (c: Context<Env>) => c.env?.ip ?? 'local'
   const sessionId = (c: Context) => getCookie(c, SESSION)
   const csrfFor = (sid: string | undefined) => (sid ? createHmac('sha256', deps.key).update(`csrf:${sid}`).digest('hex').slice(0, 32) : '')
@@ -102,6 +104,8 @@ export function createApp(deps: Deps) {
 
   // Sign in with CoinPay.
   app.get('/auth/start', (c) => {
+    // Over plain http there is no callback CoinPay will send a code to: sign in through the relay.
+    if (direct(c) && !https(c)) return c.redirect(`${RELAY_ORIGIN}/auth/start`)
     if (!authLimit.allow(`auth:${ip(c)}`)) return page(c, messagePage(ctxOf(c), { title: 'Slow down', message: 'Too many sign-in attempts. Try again in a few minutes.' }), 429)
     const state = randomBytes(16).toString('base64url')
     const { verifier, challenge } = pkce()
@@ -125,7 +129,7 @@ export function createApp(deps: Deps) {
       const me = await new CoinPay({ base: config.coinpayBase, token: tokens.accessToken, ...(config.fetch ? { fetch: config.fetch } : {}) }).userinfo()
       const user = store.upsertUser(me.sub, me.name ?? '', me.email ?? '', tokens)
       const sid = store.newSession(user.sub)
-      setCookie(c, SESSION, sid, { httpOnly: true, secure: deps.secureCookies ?? true, sameSite: 'Lax', path: '/', maxAge: 30 * 86400 })
+      setCookie(c, SESSION, sid, { httpOnly: true, secure: deps.secureCookies ?? https(c), sameSite: 'Lax', path: '/', maxAge: 30 * 86400 })
       return c.redirect(user.handle ? '/me' : '/start')
     } catch (e) {
       return page(c, messagePage(ctx, { title: 'Sign-in failed', message: e instanceof Error ? e.message : 'CoinPay did not answer.' }), 502)

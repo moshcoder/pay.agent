@@ -149,6 +149,12 @@ describe('pay.agent end to end', () => {
     expect(t.store.tokens('merchant-1')!.accessToken).toBe('at-refreshed')
   })
 
+  test('plain http on the Moshpit name signs in through the relay', async () => {
+    const t = setup()
+    const res = await t.req('/auth/start', { headers: { 'x-forwarded-proto': 'http' } })
+    expect(res.headers.get('location')).toBe('https://pay.agent.pit.world/auth/start')
+  })
+
   test('pages render, unknown links 404, security headers on', async () => {
     const t = setup()
     const home = await t.req('/')
