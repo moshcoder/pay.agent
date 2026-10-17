@@ -8,8 +8,8 @@ your CoinPay business. pay.agent never holds funds.
 
 - **Web**: https://pay.agent (Moshpit DNS) or https://pay.agent.pit.world
 - **API**: `POST /api/v1/users/:handle/payments {"amount_usd": 5, "coin": "usdc_sol"}` → address + exact amount
-- **CLI / TUI**: `npx payagent alice 5 usdc_sol`, or `npx payagent`
-- **MCP**: `claude mcp add payagent -- npx payagent mcp`
+- **CLI / TUI**: `bunx @profullstack/payagent alice 5 usdc_sol`, or `bunx @profullstack/payagent`
+- **MCP**: `claude mcp add payagent -- bunx @profullstack/payagent mcp`
 
 Onboarding is [@profullstack/coinpay-onboard](https://github.com/profullstack/coinpay-onboard):
 one pass makes the CoinPay business, payout wallets and webhook. The same

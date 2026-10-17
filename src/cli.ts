@@ -19,7 +19,7 @@ export const HELP = `payagent ${VERSION}: get paid, and pay, in crypto (https://
   payagent who <handle>             their name and the coins they take
   payagent status <id> [--wait]     a payment's status; --wait until it settles
   payagent me                       your link and payments (PAYAGENT_KEY=pa_…)
-  payagent mcp                      MCP server: claude mcp add payagent -- npx payagent mcp
+  payagent mcp                      MCP server: claude mcp add payagent -- bunx @profullstack/payagent mcp
   payagent serve [--port N]         run your own instance
 
   --json                            machine-readable output

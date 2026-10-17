@@ -1,7 +1,7 @@
 /**
  * `payagent mcp`: pay.agent for an agent, on stdio.
  *
- *   claude mcp add payagent -- npx payagent mcp
+ *   claude mcp add payagent -- bunx @profullstack/payagent mcp
  *
  * Paying needs no key: ask for a payment, send the exact amount to the address,
  * then check it. PAYAGENT_KEY (pa_…) adds `my_payments`.

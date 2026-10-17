@@ -94,7 +94,7 @@ export function homePage(ctx: Ctx): string {
   <p class="muted">Every pay link is an API. An agent asks for an address and an exact amount, pays, and checks it landed:</p>
   <pre>curl -X POST https://pay.agent/api/v1/users/alice/payments \\
   -H 'content-type: application/json' -d '{"amount_usd": 5, "coin": "usdc_sol"}'</pre>
-  <p class="muted small">Also a CLI (<code>npx payagent</code>) and an MCP server (<code>npx payagent mcp</code>). <a href="/help#agents">How</a></p>
+  <p class="muted small">Also a CLI (<code>bunx @profullstack/payagent</code>) and an MCP server (<code>bunx @profullstack/payagent mcp</code>). <a href="/help#agents">How</a></p>
 </div>`,
   })
 }
@@ -127,10 +127,10 @@ POST /api/v1/users/:handle/payments        {"amount_usd": 5, "coin": "usdc_sol",
 GET  /api/v1/payments/:id                  status: pending, confirmed, forwarded, expired</pre>
 <p>Your own payments, with the API key from <a href="/me">My link</a>:</p>
 <pre>GET  /api/v1/me                            -H 'authorization: Bearer pa_…'</pre>
-<pre>npx payagent alice 5 usdc_sol              pay alice $5 in USDC on Solana
-npx payagent status &lt;payment-id&gt;
-npx payagent                               the TUI
-claude mcp add payagent -- npx payagent mcp</pre></div>
+<pre>bunx @profullstack/payagent alice 5 usdc_sol              pay alice $5 in USDC on Solana
+bunx @profullstack/payagent status &lt;payment-id&gt;
+bunx @profullstack/payagent                               the TUI
+claude mcp add payagent -- bunx @profullstack/payagent mcp</pre></div>
 <div class="card"><h2>Your data</h2><p>We keep your CoinPay name and email, your handle, which business your link pays, and your CoinPay sign-in (encrypted). Payments to you are listed for you only. Sign out removes the session; to delete everything, use <b>Delete my link</b> on <a href="/me">My link</a>.</p></div>
 <div class="card"><h2>Reaching pay.agent</h2><p><code>pay.agent</code> is a <a href="https://pit.world">Moshpit</a> name. Without Moshpit DNS, use <a href="https://pay.agent.pit.world/">pay.agent.pit.world</a>: the same site.</p></div>`,
   })
