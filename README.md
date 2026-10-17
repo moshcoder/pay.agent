@@ -24,7 +24,7 @@ PAYAGENT_KEY=$(openssl rand -hex 32) PAYAGENT_COINPAY_CLIENT_ID=cp_… bun src/s
 
 Settings: `PAYAGENT_KEY` (encrypts stored CoinPay tokens), `PAYAGENT_COINPAY_CLIENT_ID`
 / `_SECRET` (a CoinPay OAuth client with scopes `openid profile email wallet:read merchant`),
-`PAYAGENT_DB` (SQLite path), `PORT` (8794), `COINPAY_BASE`, `PAYAGENT_WEBHOOK_ORIGIN`.
+`PAYAGENT_DB` (SQLite path), `PORT` (8796), `COINPAY_BASE`, `PAYAGENT_WEBHOOK_ORIGIN`.
 
 Deploy: `bin/install.sh` (OpenInstall) on the box, vault `profullstack/pay-agent--prod`.
 

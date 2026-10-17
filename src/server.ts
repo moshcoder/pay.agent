@@ -329,7 +329,7 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
   const trustProxy = (env.PAYAGENT_TRUST_PROXY ?? '1') === '1'
   startRingRefresh()
   return Bun.serve({
-    port: options.port ?? Number(env.PORT ?? 8794),
+    port: options.port ?? Number(env.PORT ?? 8796),
     hostname: options.hostname ?? env.HOST ?? '127.0.0.1',
     idleTimeout: 60,
     fetch(request, srv) {
