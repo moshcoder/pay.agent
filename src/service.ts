@@ -3,7 +3,7 @@
  * onboard them, and make and follow payments.
  */
 import { randomBytes } from 'node:crypto'
-import { COINS, CoinPay, onboard, payableCoins, type OnboardStep, type Payment } from '@profullstack/coinpay-onboard'
+import { COINS, CoinPay, onboard, payableBy, payableCoins, type OnboardStep, type Payment } from '@profullstack/coinpay-onboard'
 import { refresh as refreshTokens } from '@profullstack/coinpay-onboard/oauth'
 import { validHandle, type Mode, type PaymentRow, type Store, type User } from './db.js'
 
@@ -120,8 +120,7 @@ export class PayAgent {
   async recheck(user: User): Promise<string[]> {
     if (!user.businessId) return []
     const client = await this.clientFor(user.sub)
-    const wallets = await client.wallets('all', user.businessId)
-    const coins = sortCoins(payableCoins(wallets.map((w) => String(w.cryptocurrency))))
+    const coins = sortCoins(payableCoins(await payableBy(client, user.businessId)))
     this.store.setCoins(user.sub, coins)
     return coins
   }
