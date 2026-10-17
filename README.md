@@ -1,0 +1,31 @@
+# pay.agent
+
+Get paid in crypto with one link. Venmo for the agentic web, on CoinPay.
+
+Sign in with CoinPay, pick a name, and share `pay.agent/you`. People and agents
+pay you in USDC, BTC, ETH, SOL and more; it lands in your CoinPay wallet or
+your CoinPay business. pay.agent never holds funds.
+
+- **Web**: https://pay.agent (Moshpit DNS) or https://pay.agent.pit.world
+- **API**: `POST /api/v1/users/:handle/payments {"amount_usd": 5, "coin": "usdc_sol"}` → address + exact amount
+- **CLI / TUI**: `npx payagent alice 5 usdc_sol`, or `npx payagent`
+- **MCP**: `claude mcp add payagent -- npx payagent mcp`
+
+Onboarding is [@profullstack/coinpay-onboard](https://github.com/profullstack/coinpay-onboard):
+one pass makes the CoinPay business, payout wallets and webhook. The same
+engine runs at every fleet site launch.
+
+## Run it
+
+```sh
+bun install
+PAYAGENT_KEY=$(openssl rand -hex 32) PAYAGENT_COINPAY_CLIENT_ID=cp_… bun src/server.ts
+```
+
+Settings: `PAYAGENT_KEY` (encrypts stored CoinPay tokens), `PAYAGENT_COINPAY_CLIENT_ID`
+/ `_SECRET` (a CoinPay OAuth client with scopes `openid profile email wallet:read merchant`),
+`PAYAGENT_DB` (SQLite path), `PORT` (8794), `COINPAY_BASE`, `PAYAGENT_WEBHOOK_ORIGIN`.
+
+Deploy: `bin/install.sh` (OpenInstall) on the box, vault `profullstack/pay-agent--prod`.
+
+MIT
