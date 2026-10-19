@@ -8,6 +8,9 @@ your CoinPay business. pay.agent never holds funds.
 
 - **Web**: https://pay.agent (Moshpit DNS) or https://pay.agent.pit.world
 - **API**: `POST /api/v1/users/:handle/payments {"amount_usd": 5, "coin": "usdc_sol"}` → address + exact amount
+- **Invoices**: `POST /api/v1/invoices {"to_email", "description", "amount_usd", "recurrence": "monthly"}` (your key) → a real
+  CoinPay invoice sent as you; CoinPay emails the pay link and sends the repeats. `payagent invoice pat@example.com 49 Logo`,
+  MCP `send_invoice`. Each one has a public page at `pay.agent/i/<id>`.
 - **CLI / TUI**: `bunx @profullstack/payagent alice 5 usdc_sol`, or `bunx @profullstack/payagent`
 - **MCP**: `claude mcp add payagent -- bunx @profullstack/payagent mcp`
 

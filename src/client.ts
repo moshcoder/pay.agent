@@ -3,6 +3,25 @@
  * PAYAGENT_URL points it at another instance; PAYAGENT_KEY (pa_…) reads your own.
  */
 export type ApiPayment = { id: string; handle: string; amount_usd: number; coin: string; amount_crypto: string; address: string; status: string; expires_at: string | null; checkout_url: string }
+export type ApiInvoice = {
+  id: string
+  number: string
+  handle: string
+  to_name: string
+  to_email?: string
+  description: string
+  amount_usd: number
+  coin: string
+  due_date: string | null
+  recurrence: string | null
+  status: string
+  amount_crypto?: string
+  address?: string
+  url: string
+  coinpay_url: string
+  warning?: string
+}
+export type InvoiceRequest = { to_email: string; to_name?: string; description: string; amount_usd: number; coin?: string; due_date?: string; recurrence?: string; email?: boolean }
 export type ApiUser = { handle: string; name: string; coins: string[]; url: string }
 
 export class ApiError extends Error {
@@ -44,6 +63,21 @@ export class PayAgentClient {
   me(): Promise<ApiUser & { payments: (ApiPayment & { note: string; created_at: string })[] }> {
     if (!this.key) throw new ApiError('Set PAYAGENT_KEY to your key from pay.agent/me', 401)
     return this.call('GET', '/api/v1/me', undefined, true)
+  }
+
+  /** Send an invoice from your link (needs PAYAGENT_KEY): CoinPay emails them a pay link. */
+  invoice(input: InvoiceRequest): Promise<ApiInvoice> {
+    if (!this.key) throw new ApiError('Set PAYAGENT_KEY to your key from pay.agent/me', 401)
+    return this.call('POST', '/api/v1/invoices', input, true)
+  }
+
+  invoices(): Promise<{ invoices: (ApiInvoice & { created_at: string })[] }> {
+    if (!this.key) throw new ApiError('Set PAYAGENT_KEY to your key from pay.agent/me', 401)
+    return this.call('GET', '/api/v1/invoices', undefined, true)
+  }
+
+  invoiceStatus(id: string): Promise<ApiInvoice> {
+    return this.call('GET', `/api/v1/invoices/${encodeURIComponent(id)}`)
   }
 }
 

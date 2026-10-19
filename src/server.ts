@@ -15,11 +15,11 @@ import { verifyWebhook, eventPaymentId, type WebhookEvent } from '@profullstack/
 import { authorizeUrl, exchangeCode, pkce } from '@profullstack/coinpay-onboard/oauth'
 import { CoinPay } from '@profullstack/coinpay-onboard'
 import { Sealer, Store, type User } from './db.js'
-import { checkoutPage, dashboardPage, helpPage, homePage, messagePage, payPage, setupDonePage, wizardPage, type Ctx } from './html.js'
+import { checkoutPage, dashboardPage, helpPage, homePage, invoicePage, messagePage, payPage, setupDonePage, wizardPage, type Ctx } from './html.js'
 import { startPitFooterRefresh } from './pit-footer.js'
 import { ringDescriptor, startRingFooterRefresh } from './ring-footer.js'
 import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from './ring.js'
-import { PayAgent, SetupError, type Config } from './service.js'
+import { PayAgent, SetupError, type Config, type InvoiceInput, type Recurrence } from './service.js'
 import { VERSION } from './version.js'
 
 export { VERSION }
@@ -183,12 +183,12 @@ export function createApp(deps: Deps) {
   })
 
   // The owner's page.
-  const dashboard = async (c: Context, extra: { apiKey?: string; flash?: string } = {}) => {
+  const dashboard = async (c: Context, extra: { apiKey?: string; flash?: string; invoiceForm?: Record<string, string> } = {}) => {
     const ctx = ctxOf(c)
     const user = ctx.user!
     if (!user.handle) return c.redirect('/start')
     const qr = await qrSvg(`${ctx.origin}/${user.handle}`)
-    return page(c, dashboardPage(ctx, { user, payments: store.payments(user.handle), qr, ...extra }))
+    return page(c, dashboardPage(ctx, { user, payments: store.payments(user.handle), invoices: store.invoices(user.handle), qr, ...extra }))
   }
 
   app.get('/me', (c) => (userOf(c) ? dashboard(c) : c.redirect('/auth/start')))
@@ -217,6 +217,20 @@ export function createApp(deps: Deps) {
         return c.redirect('/')
     }
     return c.redirect('/me')
+  })
+
+  // An invoice from the owner's page.
+  app.post('/me/invoice', async (c) => {
+    const user = userOf(c)
+    if (!user) return c.redirect('/auth/start')
+    const form = (await c.req.parseBody()) as Record<string, string>
+    if (!csrfOk(c, form.csrf)) return dashboard(c, { flash: 'That form went stale. Try again.' })
+    try {
+      const r = await agent.sendInvoice(user, invoiceInput(form))
+      return c.redirect(`/i/${r.invoice.id}${r.warning ? '?emailed=0' : ''}`)
+    } catch (e) {
+      return dashboard(c, { flash: e instanceof Error ? e.message : String(e), invoiceForm: form })
+    }
   })
 
   // CoinPay's events, for the businesses pay.agent made (wallet mode).
@@ -271,11 +285,63 @@ export function createApp(deps: Deps) {
     return p ? c.json(publicPayment(p, origin(c))) : c.json({ error: 'no such payment' }, 404)
   })
 
-  app.get('/api/v1/me', (c) => {
+  const keyUser = (c: Context) => {
     const key = (c.req.header('authorization') ?? '').replace(/^Bearer\s+/i, '')
     const u = key.startsWith('pa_') ? store.byApiKey(key) : null
-    if (!u?.handle) return c.json({ error: 'send your API key: authorization: Bearer pa_…' }, 401)
+    return u?.handle ? u : null
+  }
+  const NO_KEY = { error: 'send your API key: authorization: Bearer pa_…' }
+
+  app.get('/api/v1/me', (c) => {
+    const u = keyUser(c)
+    if (!u?.handle) return c.json(NO_KEY, 401)
     return c.json({ ...publicUser(u, origin(c)), mode: u.mode, business: u.businessName, payments: store.payments(u.handle).map((p) => ({ ...publicPayment(p, origin(c)), note: p.note, payer: p.payer, created_at: new Date(p.createdAt).toISOString() })) })
+  })
+
+  // Invoices: an owner sends and lists with their key; anyone with the id can read one.
+  const publicInvoice = (i: NonNullable<ReturnType<Store['invoice']>>, o: string, live?: { amountCrypto: string; address: string } | null) => ({
+    id: i.id,
+    number: i.number,
+    handle: i.handle,
+    to_name: i.toName,
+    description: i.description,
+    amount_usd: i.amountUsd,
+    coin: i.coin,
+    due_date: i.dueDate,
+    recurrence: i.recurrence,
+    status: i.status,
+    ...(live?.address ? { amount_crypto: live.amountCrypto, address: live.address } : {}),
+    url: `${o}/i/${i.id}`,
+    coinpay_url: i.payUrl,
+  })
+
+  app.post('/api/v1/invoices', async (c) => {
+    const u = keyUser(c)
+    if (!u) return c.json(NO_KEY, 401)
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>
+    try {
+      const r = await agent.sendInvoice(u, invoiceInput(body))
+      return c.json({ ...publicInvoice(r.invoice, origin(c)), to_email: r.invoice.toEmail, ...(r.warning ? { warning: r.warning } : {}) }, 201)
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, e instanceof SetupError ? 400 : 502)
+    }
+  })
+
+  app.get('/api/v1/invoices', (c) => {
+    const u = keyUser(c)
+    if (!u?.handle) return c.json(NO_KEY, 401)
+    return c.json({ invoices: store.invoices(u.handle).map((i) => ({ ...publicInvoice(i, origin(c)), to_email: i.toEmail, created_at: new Date(i.createdAt).toISOString() })) })
+  })
+
+  app.get('/api/v1/invoices/:id', async (c) => {
+    const r = await agent.followInvoice(c.req.param('id'))
+    return r ? c.json(publicInvoice(r.invoice, origin(c), r.live)) : c.json({ error: 'no such invoice' }, 404)
+  })
+
+  app.get('/i/:id', async (c) => {
+    const r = await agent.followInvoice(c.req.param('id'))
+    if (!r) return page(c, messagePage(ctxOf(c), { title: 'No such invoice', message: 'That invoice does not exist.' }), 404)
+    return page(c, invoicePage(ctxOf(c), { ...r, payee: store.byHandle(r.invoice.handle), qr: r.live?.address ? await qrSvg(r.live.address) : '', emailed: c.req.query('emailed') !== '0' }))
   })
 
   // A payment's own page.
@@ -311,6 +377,22 @@ export function createApp(deps: Deps) {
     return c.req.path.startsWith('/api/') ? c.json({ error: 'Something went wrong.' }, 500) : page(c, messagePage(ctxOf(c), { title: 'Something went wrong', message: 'Try again in a moment.' }), 500)
   })
   return app
+}
+
+/** Form fields or JSON to an invoice: to_email, to_name, description, amount_usd (or amount), coin, due_date, recurrence, email. */
+function invoiceInput(f: Record<string, unknown>): InvoiceInput {
+  const str = (k: string) => (typeof f[k] === 'string' || typeof f[k] === 'number' ? String(f[k]).trim() : '')
+  const recurrence = str('recurrence')
+  return {
+    toEmail: str('to_email'),
+    ...(str('to_name') ? { toName: str('to_name') } : {}),
+    description: str('description'),
+    amountUsd: Number((str('amount_usd') || str('amount')).replace(/[$,\s]/g, '')),
+    ...(str('coin') ? { coin: str('coin') } : {}),
+    ...(str('due_date') ? { dueDate: str('due_date') } : {}),
+    ...(recurrence && recurrence !== 'none' ? { recurrence: recurrence as Recurrence } : {}),
+    ...(f.email === false || f.email === 'false' || f.email === '0' ? { email: false } : {}),
+  }
 }
 
 export function serve(options: { port?: number; hostname?: string } = {}) {

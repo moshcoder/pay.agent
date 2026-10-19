@@ -8,7 +8,7 @@ import { PayAgentClient } from '../src/client.ts'
 
 /** CoinPay, faked: OAuth, businesses, wallets, payments. */
 function fakeCoinPay() {
-  const state = { businesses: [] as any[], accountWallets: [{ cryptocurrency: 'USDC_SOL', wallet_address: 'So1Payout' }] as any[], payments: new Map<string, any>(), refreshes: 0, lastPaymentBody: null as any }
+  const state = { businesses: [] as any[], accountWallets: [{ cryptocurrency: 'USDC_SOL', wallet_address: 'So1Payout' }] as any[], payments: new Map<string, any>(), refreshes: 0, lastPaymentBody: null as any, invoices: new Map<string, any>(), clients: [] as any[], invoiceAuth: [] as string[] }
   const fetchImpl = (async (url: string | URL, init: RequestInit = {}) => {
     const u = new URL(String(url))
     const method = init.method ?? 'GET'
@@ -33,6 +33,26 @@ function fakeCoinPay() {
       const p = { id: `pay${state.payments.size + 1}`, status: 'pending', payment_address: 'So1Deposit', amount_usd: body.amount_usd, amount_crypto: String(body.amount_usd), currency: body.currency, blockchain: 'USDC_SOL', expires_at: '2030-01-01T00:00:00Z' }
       state.payments.set(p.id, p)
       return json(201, { success: true, payment: p })
+    }
+    if (path === '/api/clients' && method === 'POST') {
+      const c = { id: `cl${state.clients.length + 1}`, ...body }
+      state.clients.push(c)
+      return json(201, { success: true, client: c })
+    }
+    if (path === '/api/invoices' && method === 'POST') {
+      state.invoiceAuth.push(new Headers(init.headers).get('authorization') ?? '')
+      const inv = { id: `inv-${state.invoices.size + 1}`, invoice_number: `INV-00${state.invoices.size + 1}`, status: 'draft', ...body }
+      state.invoices.set(inv.id, inv)
+      return json(201, { success: true, invoice: inv })
+    }
+    const ia = /^\/api\/invoices\/(inv-\d+)\/(send|publish|pay)$/.exec(path)
+    if (ia) {
+      const inv = state.invoices.get(ia[1]!)
+      if (!inv) return json(404, { success: false, error: 'Invoice not found' })
+      if (ia[2] === 'pay') return json(200, { success: true, invoice: { ...inv, crypto_amount: '49.000000', payment_address: 'So1Invoice' } })
+      inv.status = 'sent'
+      inv.action = ia[2]
+      return json(200, { success: true, invoice: inv, paymentLink: `https://cp.test/now/${inv.id}` })
     }
     const m = /^\/api\/payments\/(pay\d+)$/.exec(path)
     if (m) return json(200, { success: true, payment: state.payments.get(m[1]!) })
@@ -203,5 +223,57 @@ describe('terminal', () => {
       new Response(JSON.stringify({ id: 'p1', handle: 'bob', amount_usd: 5, coin: 'usdc_sol', amount_crypto: '5.0', address: 'So1', status: 'pending', expires_at: null, checkout_url: 'https://x/p/p1' }), { status: 201 })) as unknown as typeof fetch)
     expect(await main(['bob', '5', 'usdc_sol'], { log: (t) => lines.push(t), error: (t) => lines.push(t) }, client)).toBe(0)
     expect(lines.join('\n')).toContain('Send exactly 5.0 USDC_SOL')
+  })
+
+  test('invoices: send from the page and the API, CoinPay emails, repeats, paid shows', async () => {
+    const t = setup()
+    await signIn(t)
+    let csrf = await t.csrfFrom(await t.req('/start'))
+    await t.req('/start', { method: 'POST', form: { csrf, handle: 'studio', mode: 'wallet' } })
+    csrf = await t.csrfFrom(await t.req('/me'))
+
+    const bad = await t.req('/me/invoice', { method: 'POST', form: { csrf, to_email: 'nope', description: 'x', amount: '49' } })
+    expect(await bad.text()).toContain('An email address')
+    expect(t.cp.state.invoices.size).toBe(0)
+
+    const sent = await t.req('/me/invoice', { method: 'POST', form: { csrf, to_email: 'Pat@Example.com', to_name: 'Pat', description: 'App build + first 30 days', amount: '$49', coin: 'usdc_sol', due_date: '2026-11-01', recurrence: 'none' } })
+    expect(sent.status).toBe(302)
+    expect(sent.headers.get('location')).toBe('/i/inv-1')
+    const inv = t.cp.state.invoices.get('inv-1')
+    expect(inv).toMatchObject({ amount: 49, currency: 'USD', crypto_currency: 'USDC_SOL', client_id: 'cl1', notes: 'App build + first 30 days', due_date: '2026-11-01T00:00:00.000Z', action: 'send' })
+    expect(inv.schedule).toBeUndefined()
+    expect(t.cp.state.clients[0]).toMatchObject({ email: 'pat@example.com', name: 'Pat', business_id: 'b1' })
+    // CoinPay is called as the signed-in merchant, never with a key of ours.
+    expect(t.cp.state.invoiceAuth[0]).toMatch(/^Bearer at-/)
+
+    const view = await (await t.req('/i/inv-1')).text()
+    expect(view).toContain('<p class="amount">$49</p>')
+    expect(view).toContain('So1Invoice')
+    expect(view).toContain('49.000000')
+    expect(view).toContain('https://cp.test/now/inv-1')
+    expect(await (await t.req('/me')).text()).toContain('INV-001')
+
+    // The API, with a key: monthly, no email.
+    const keyHtml = await (await t.req('/me/key', { method: 'POST', form: { csrf } })).text()
+    const key = /(pa_[A-Za-z0-9_-]+)/.exec(keyHtml)![1]!
+    expect((await t.req('/api/v1/invoices', { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } })).status).toBe(401)
+    const api = await t.req('/api/v1/invoices', { method: 'POST', body: JSON.stringify({ to_email: 'ops@example.com', description: 'Hosting', amount_usd: 2, recurrence: 'monthly', email: false }), headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` } })
+    expect(api.status).toBe(201)
+    const made: any = await api.json()
+    expect(made).toMatchObject({ id: 'inv-2', amount_usd: 2, recurrence: 'monthly', status: 'sent', url: 'https://pay.agent/i/inv-2' })
+    expect(t.cp.state.invoices.get('inv-2')).toMatchObject({ schedule: { recurrence: 'monthly' }, action: 'publish' })
+    expect((await t.req('/api/v1/invoices', { method: 'POST', body: JSON.stringify({ to_email: 'a@b.co', description: 'x', amount_usd: 5, recurrence: 'hourly' }), headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` } })).status).toBe(400)
+
+    const list: any = await (await t.req('/api/v1/invoices', { headers: { authorization: `Bearer ${key}` } })).json()
+    expect(list.invoices.map((i: any) => i.id)).toEqual(['inv-2', 'inv-1'])
+
+    // CoinPay marks it paid: the public read and the page follow.
+    t.cp.state.invoices.get('inv-1').status = 'paid'
+    const pub: any = await (await t.req('/api/v1/invoices/inv-1')).json()
+    expect(pub.status).toBe('paid')
+    expect(pub.to_email).toBeUndefined()
+    expect(await (await t.req('/i/inv-1')).text()).toContain('Paid. Thank you.')
+    expect((await t.req('/i/nope')).status).toBe(404)
+    expect(validHandle('invoices')).toBe('that one is taken')
   })
 })
