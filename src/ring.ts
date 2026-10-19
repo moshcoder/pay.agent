@@ -69,6 +69,7 @@ export function siteHref(site: RingSite, direct: boolean): string {
   return site.moshpit && !direct ? relayUrl(site.name) : `https://${site.name}/`
 }
 
+/** The ring, the site you are on between its neighbours, random, and the way in for a builder (pit.world/start). */
 export function ringBar(self: string, direct: boolean): string {
   const at = sites.findIndex((s) => s.name === self)
   const i = at < 0 ? 0 : at
@@ -76,11 +77,14 @@ export function ringBar(self: string, direct: boolean): string {
   const next = sites[(i + 1) % sites.length]!
   const link = (s: RingSite, text = s.name) =>
     `<a href="${esc(siteHref(s, direct))}"${s.name === self ? ' aria-current="page"' : ''} title="${esc(s.about)}">${esc(text)}</a>`
+  const current = sites.find((s) => s.name === self)
+  const here = current ? link(current) : `<span aria-current="page">${esc(self)}</span>`
   return `<nav class="ring-bar" aria-label="Moshpit ring">
   <a class="ring-home" href="${RING_HOME}">◉ <span>Moshpit </span>ring</a>
   ${link(prev, `‹ ${prev.name}`)}
-  <span class="ring-sites">${sites.map((s) => link(s)).join('')}</span>
+  <span class="ring-sites">${here}</span>
   ${link(next, `${next.name} ›`)}
   <a href="${RING_HOME}/random?from=${encodeURIComponent(self)}${direct ? '&amp;direct=1' : ''}">random</a>
+  <a class="ring-start" href="https://pit.world/start">Start building here…</a>
 </nav>`
 }
