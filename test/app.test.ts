@@ -173,6 +173,9 @@ describe('pay.agent end to end', () => {
     expect(html).toContain('data-site="88fcc3cd-2374-47da-8fbb-5cc2ae2e7499"')
     expect(html).toContain('format=banner_300x250')
     expect(html).toContain('format=text_link')
+    // No ad in or pressed against the footer.
+    expect(html.slice(html.indexOf('<footer'))).not.toContain('ad-unit')
+    expect(html).not.toMatch(/<\/iframe><\/div>\s*<\/main>/)
     const help = await t.req('/help')
     expect(help.status).toBe(200)
     expect(await help.text()).toContain('format=text_link')
