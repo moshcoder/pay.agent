@@ -17,6 +17,7 @@ import { CoinPay } from '@profullstack/coinpay-onboard'
 import { Sealer, Store, type User } from './db.js'
 import { checkoutPage, dashboardPage, helpPage, homePage, messagePage, payPage, setupDonePage, wizardPage, type Ctx } from './html.js'
 import { startPitFooterRefresh } from './pit-footer.js'
+import { ringDescriptor, startRingFooterRefresh } from './ring-footer.js'
 import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from './ring.js'
 import { PayAgent, SetupError, type Config } from './service.js'
 import { VERSION } from './version.js'
@@ -90,6 +91,7 @@ export function createApp(deps: Deps) {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) c.header(k, v)
   })
 
+  app.get('/.well-known/openwebring.json', (c) => c.json(ringDescriptor(), 200, { 'access-control-allow-origin': '*' }))
   app.get('/health', (c) => c.json({ ok: true, version: VERSION }))
 
   // Static files: the stylesheet, the script, the icon, the Moshpit root.
@@ -330,6 +332,7 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
   const trustProxy = (env.PAYAGENT_TRUST_PROXY ?? '1') === '1'
   startRingRefresh()
   startPitFooterRefresh('pay.agent')
+  startRingFooterRefresh()
   return Bun.serve({
     port: options.port ?? Number(env.PORT ?? 8796),
     hostname: options.hostname ?? env.HOST ?? '127.0.0.1',

@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs'
 import { COINS, type OnboardStep } from '@profullstack/coinpay-onboard'
 import type { PaymentRow, User } from './db.js'
 import { pitFooter } from './pit-footer.js'
+import { ringFooter } from './ring-footer.js'
 import { RING_PLACEHOLDER } from './ring.js'
 import { coinName, PAID } from './service.js'
 
@@ -80,9 +81,7 @@ ${RING_PLACEHOLDER}
 ${o.ads ? adUnit('text_link') : ''}
 ${o.body}
 </main>
-<footer>
-  <span>© pay.agent · <a href="/help">Help</a> · <a href="${REPO}">Source</a> · Payments by <a href="${COINPAY}">CoinPay</a></span>
-</footer>
+${ringFooter()}
 ${pitFooter()}
 </body>
 </html>`
