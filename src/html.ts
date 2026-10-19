@@ -13,6 +13,18 @@ export const SITE = 'https://pay.agent'
 export const REPO = 'https://github.com/moshcoder/pay.agent'
 const COINPAY = 'https://coinpayportal.com'
 
+/** crawlproof analytics: one async script on every page. */
+const TRACKER = '<script data-site="88fcc3cd-2374-47da-8fbb-5cc2ae2e7499" src="https://crawlproof.com/stats.js" async></script>'
+
+/**
+ * A crawlproof ad: a cross-origin, sandboxed iframe, so it can never read the
+ * page. Only on public pages where nobody is paying, signing in or typing an
+ * address. CRAWLPROOF_AD_SLOT overrides the slot; 'off' turns ads off.
+ */
+export const AD_SLOT = process.env.CRAWLPROOF_AD_SLOT ?? 'b479d9b7-3843-44f3-86f7-bbf0b4f76675'
+export const adUnit = (format: 'banner_300x250' | 'text_link') =>
+  AD_SLOT === 'off' ? '' : `<div class="ad-unit ad-${format}"><iframe src="https://crawlproof.com/api/ads/frame?slot=${encodeURIComponent(AD_SLOT)}&amp;format=${format}" title="Advertisement" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation" scrolling="no"></iframe></div>`
+
 const asset = (name: string) => {
   const body = readFileSync(new URL(`../public/${name}`, import.meta.url))
   return `/${name}?v=${createHash('sha256').update(body).digest('hex').slice(0, 10)}`
@@ -28,7 +40,8 @@ const LOGO = `<svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="
 
 export type Ctx = { user: User | null; origin: string; csrf: string }
 
-type LayoutOptions = { title: string; description: string; path: string; body: string; ctx: Ctx; noindex?: boolean; script?: boolean }
+/** ads: a text-link ad above the footer. Leave it off wherever someone pays, signs in or enters anything. */
+type LayoutOptions = { title: string; description: string; path: string; body: string; ctx: Ctx; noindex?: boolean; script?: boolean; ads?: boolean }
 
 function layout(o: LayoutOptions): string {
   const signedIn = Boolean(o.ctx.user)
@@ -50,6 +63,7 @@ ${o.noindex ? '<meta name="robots" content="noindex">' : `<link rel="canonical" 
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="${STYLE_URL}">
 ${o.script ? `<script src="${SCRIPT_URL}" defer></script>` : ''}
+${TRACKER}
 </head>
 <body>
 ${RING_PLACEHOLDER}
@@ -64,6 +78,7 @@ ${RING_PLACEHOLDER}
 <main>
 ${o.body}
 </main>
+${o.ads ? adUnit('text_link') : ''}
 <footer>
   <span>pay.agent: get paid in crypto with one link. Payments by <a href="${COINPAY}">CoinPay</a>.</span>
   <span><a href="/help">Help</a> · <a href="${REPO}">Source</a> · <a href="https://pit.world/ring">Moshpit ring</a></span>
@@ -78,6 +93,7 @@ export function homePage(ctx: Ctx): string {
     title: 'pay.agent: get paid in crypto with one link',
     description: 'Your own pay link in a minute. Anyone, person or agent, pays you in USDC, BTC, ETH, SOL and more, straight to your CoinPay wallet or business.',
     path: '/',
+    ads: true,
     body: `<section class="hero">
   <h1>Get paid in crypto.<br>One link.</h1>
   <p class="tag">Sign in with CoinPay, pick a name, and share <b>pay.agent/you</b>. People and agents pay you in USDC, BTC, ETH, SOL and more. It lands in your CoinPay wallet or business.</p>
@@ -95,7 +111,8 @@ export function homePage(ctx: Ctx): string {
   <pre>curl -X POST https://pay.agent/api/v1/users/alice/payments \\
   -H 'content-type: application/json' -d '{"amount_usd": 5, "coin": "usdc_sol"}'</pre>
   <p class="muted small">Also a CLI (<code>bunx @profullstack/payagent</code>) and an MCP server (<code>bunx @profullstack/payagent mcp</code>). <a href="/help#agents">How</a></p>
-</div>`,
+</div>
+${adUnit('banner_300x250')}`,
   })
 }
 
@@ -106,6 +123,7 @@ export function helpPage(ctx: Ctx): string {
     title: 'Help · pay.agent',
     description: 'How pay.agent works: Sign in with CoinPay, your pay link, coins, fees, agents, and the API.',
     path: '/help',
+    ads: true,
     body: `<section class="hero"><h1>Help</h1><p class="tag">Everything about pay.agent on one page.</p></section>
 <div class="card"><h2>What is it?</h2><p>pay.agent gives you a link, <code>pay.agent/yourname</code>, that anyone can pay in crypto. It is a simple front door to <a href="${COINPAY}">CoinPay</a>, which holds the addresses and moves the money. pay.agent never holds your funds.</p></div>
 <div class="card"><h2>Getting started</h2><ol>

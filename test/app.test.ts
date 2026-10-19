@@ -85,7 +85,10 @@ describe('pay.agent end to end', () => {
 
     const wizard = await t.req('/start')
     expect(wizard.status).toBe(200)
-    const csrf = await t.csrfFrom(wizard)
+    const csrf = await t.csrfFrom(wizard.clone())
+    const wizardHtml = await wizard.text()
+    expect(wizardHtml).toContain('crawlproof.com/stats.js')
+    expect(wizardHtml).not.toContain('ad-unit')
     const made = await t.req('/start', { method: 'POST', form: { csrf, handle: 'Alice', mode: 'wallet' } })
     const done = await made.text()
     expect(made.status).toBe(200)
@@ -100,6 +103,8 @@ describe('pay.agent end to end', () => {
     const checkout = await (await t.req(`/p/${pid}`)).text()
     expect(checkout).toContain('So1Deposit')
     expect(checkout).toContain('<svg class="qr"')
+    expect(checkout).not.toContain('ad-unit')
+    expect(await (await t.req('/alice')).text()).not.toContain('ad-unit')
 
     // CoinPay says it is paid.
     const event = JSON.stringify({ id: 'evt_1', type: 'payment.forwarded', business_id: 'b1', data: { payment_id: pid, status: 'forwarded' } })
@@ -111,6 +116,7 @@ describe('pay.agent end to end', () => {
     // The owner sees it, makes a key, reads it over the API.
     const meHtml = await (await t.req('/me')).text()
     expect(meHtml).toContain('$12.50 received')
+    expect(meHtml).not.toContain('ad-unit')
     const keyPage = await (await t.req('/me/key', { method: 'POST', form: { csrf: /name="csrf" value="([0-9a-f]+)"/.exec(meHtml)![1]! } })).text()
     const key = /(pa_[A-Za-z0-9_-]+)/.exec(keyPage)![1]!
     const api = (await (await t.req('/api/v1/me', { headers: { authorization: `Bearer ${key}` } })).json()) as any
@@ -162,7 +168,14 @@ describe('pay.agent end to end', () => {
     const html = await home.text()
     expect(html).toContain('ring-bar')
     expect(html).toContain('Start with CoinPay')
-    expect((await t.req('/help')).status).toBe(200)
+    const csp = home.headers.get('content-security-policy')!
+    for (const d of ['script-src', 'connect-src', 'frame-src']) expect(csp).toMatch(new RegExp(`${d} [^;]*https://crawlproof\\.com`))
+    expect(html).toContain('data-site="88fcc3cd-2374-47da-8fbb-5cc2ae2e7499"')
+    expect(html).toContain('format=banner_300x250')
+    expect(html).toContain('format=text_link')
+    const help = await t.req('/help')
+    expect(help.status).toBe(200)
+    expect(await help.text()).toContain('format=text_link')
     expect((await t.req('/zzz-nobody')).status).toBe(404)
     expect((await t.req('/health')).status).toBe(200)
     expect((await t.req('/style.css')).headers.get('content-type')).toContain('text/css')
