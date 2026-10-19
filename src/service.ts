@@ -3,9 +3,9 @@
  * onboard them, and make and follow payments.
  */
 import { randomBytes } from 'node:crypto'
-import { COINS, CoinPay, onboard, payableBy, payableCoins, type OnboardStep, type Payment } from '@profullstack/coinpay-onboard'
+import { COINS, CoinPay, onboard, payableBy, payableCoins, walletCode, type OnboardStep, type Payment } from '@profullstack/coinpay-onboard'
 import { refresh as refreshTokens } from '@profullstack/coinpay-onboard/oauth'
-import { validHandle, type Mode, type PaymentRow, type Store, type User } from './db.js'
+import { validHandle, type InvoiceRow, type Mode, type PaymentRow, type Store, type User } from './db.js'
 
 export type Config = {
   coinpayBase: string
@@ -162,6 +162,83 @@ export class PayAgent {
     return this.store.payment(payment.id)!
   }
 
+  /**
+   * An invoice from `user` to someone's email: a CoinPay client and invoice on
+   * their pay.agent business, then CoinPay activates its pay link and (unless
+   * `email` is false) emails it. A recurrence makes CoinPay send the next ones.
+   */
+  async sendInvoice(user: User, input: InvoiceInput): Promise<{ invoice: InvoiceRow; warning?: string }> {
+    if (!user.businessId || !user.handle) throw new SetupError('Set up your pay link first.')
+    const toEmail = clean(input.toEmail, 254).toLowerCase()
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(toEmail)) throw new SetupError('Who is it for? An email address.', 'to_email')
+    const description = clean(input.description, 500)
+    if (!description) throw new SetupError('Say what it is for.', 'description')
+    const amount = Math.round(Number(input.amountUsd) * 100) / 100
+    if (!Number.isFinite(amount) || amount < MIN_USD || amount > MAX_USD) throw new SetupError(`Amount must be between $${MIN_USD} and $${MAX_USD.toLocaleString('en-US')}.`, 'amount')
+    const coin = input.coin && user.coins.includes(input.coin) ? input.coin : user.coins[0]
+    if (!coin) throw new SetupError('Add a payout address in CoinPay first, then re-check coins.')
+    if (input.recurrence && !RECURRENCES.includes(input.recurrence)) throw new SetupError(`Repeat must be one of ${RECURRENCES.join(', ')}.`, 'recurrence')
+    const due = input.dueDate ? new Date(`${input.dueDate}T00:00:00Z`) : new Date()
+    if (Number.isNaN(due.getTime())) throw new SetupError('Due date must look like 2026-11-30.', 'due_date')
+    if (this.store.invoicesSince(user.handle, Date.now() - 3600_000) >= 60) throw new SetupError('That is a lot of invoices in an hour. Try again later.')
+    const toName = clean(input.toName, 80)
+
+    const client = await this.clientFor(user.sub)
+    const made = await client.call<{ client: { id: string } }>('POST', '/api/clients', { business_id: user.businessId, email: toEmail, ...(toName ? { name: toName } : {}) })
+    const created = await client.call<{ invoice: { id: string; invoice_number?: string } }>(
+      'POST',
+      '/api/invoices',
+      {
+        business_id: user.businessId,
+        client_id: made.client.id,
+        currency: 'USD',
+        amount,
+        crypto_currency: walletCode(coin),
+        due_date: due.toISOString(),
+        notes: description,
+        ...(input.recurrence ? { schedule: { recurrence: input.recurrence } } : {}),
+      },
+      { 'idempotency-key': randomBytes(16).toString('hex') },
+    )
+    const id = created.invoice.id
+    const action = input.email === false ? 'publish' : 'send'
+    const sent = await client.call<{ paymentLink?: string; warning?: string; invoice?: { invoice_number?: string } }>('POST', `/api/invoices/${encodeURIComponent(id)}/${action}`)
+    this.store.addInvoice({
+      id,
+      handle: user.handle,
+      number: String(sent.invoice?.invoice_number ?? created.invoice.invoice_number ?? ''),
+      toEmail,
+      toName,
+      description,
+      amountUsd: amount,
+      coin,
+      dueDate: due.toISOString().slice(0, 10),
+      recurrence: input.recurrence ?? null,
+      status: 'sent',
+      payUrl: sent.paymentLink ?? `${this.config.coinpayBase}/now/${id}`,
+    })
+    return { invoice: this.store.invoice(id)!, ...(sent.warning ? { warning: sent.warning } : {}) }
+  }
+
+  /** An invoice and, while it is open, what to send where; CoinPay's invoice view is public. */
+  async followInvoice(id: string): Promise<{ invoice: InvoiceRow; live: InvoiceLive | null } | null> {
+    const row = this.store.invoice(id)
+    if (!row) return null
+    try {
+      const body = await new CoinPay({ base: this.config.coinpayBase, ...(this.config.fetch ? { fetch: this.config.fetch } : {}) }).call<{ invoice: any }>('GET', `/api/invoices/${encodeURIComponent(id)}/pay`)
+      const inv = body.invoice ?? {}
+      const status = String(inv.status ?? row.status)
+      if (status !== row.status) this.store.setInvoiceStatus(id, status)
+      return {
+        invoice: this.store.invoice(id)!,
+        live: { status, amountCrypto: String(inv.crypto_amount ?? ''), address: String(inv.payment_address ?? ''), number: String(inv.invoice_number ?? row.number) },
+      }
+    } catch {
+      // CoinPay unreachable: show what we last knew.
+      return { invoice: row, live: null }
+    }
+  }
+
   /** A payment's status, asked of CoinPay when it is still open (the webhook may not reach us for a business we do not own). */
   async follow(id: string): Promise<PaymentRow | null> {
     const row = this.store.payment(id)
@@ -176,6 +253,28 @@ export class PayAgent {
     return this.store.payment(id)
   }
 }
+
+/** How often CoinPay can send an invoice again by itself. */
+export const RECURRENCES = ['weekly', 'monthly', 'quarterly', 'yearly'] as const
+export type Recurrence = (typeof RECURRENCES)[number]
+
+export type InvoiceInput = {
+  toEmail: string
+  toName?: string
+  description: string
+  amountUsd: number
+  coin?: string
+  /** YYYY-MM-DD; today when left out. */
+  dueDate?: string
+  recurrence?: Recurrence
+  /** false: publish the pay link without CoinPay emailing it. */
+  email?: boolean
+}
+
+/** What the payer needs to pay an invoice now, read from CoinPay's public invoice view. */
+export type InvoiceLive = { status: string; amountCrypto: string; address: string; number: string }
+
+const clean = (v: unknown, max: number) => String(v ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max)
 
 export const FINAL = new Set(['confirmed', 'forwarded', 'completed', 'expired', 'failed', 'refunded'])
 export const PAID = new Set(['confirmed', 'forwarded', 'completed'])

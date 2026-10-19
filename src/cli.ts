@@ -6,6 +6,8 @@
  *   payagent who <handle>             who they are and which coins they take
  *   payagent status <payment-id> [--wait]
  *   payagent me                       your link and payments (PAYAGENT_KEY)
+ *   payagent invoice <email> <usd> <what for…> [--coin=x] [--due=YYYY-MM-DD] [--repeat=monthly] [--no-email]
+ *   payagent invoices                 invoices you sent (PAYAGENT_KEY)
  *   payagent mcp                      MCP server on stdio
  *   payagent serve [--port N]         run your own pay.agent
  */
@@ -19,6 +21,11 @@ export const HELP = `payagent ${VERSION}: get paid, and pay, in crypto (https://
   payagent who <handle>             their name and the coins they take
   payagent status <id> [--wait]     a payment's status; --wait until it settles
   payagent me                       your link and payments (PAYAGENT_KEY=pa_…)
+  payagent invoice <email> <usd> <what for…>
+           [--coin=usdc_sol] [--due=2026-11-30] [--repeat=monthly] [--no-email]
+                                    send an invoice; CoinPay emails the pay link
+  payagent invoices                 invoices you sent, and whether they are paid
+  payagent invoice-status <id>      one invoice's status (public)
   payagent mcp                      MCP server: claude mcp add payagent -- bunx @profullstack/payagent mcp
   payagent serve [--port N]         run your own instance
 
@@ -33,6 +40,7 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
   const json = argv.includes('--json')
   const wait = argv.includes('--wait')
   const args = argv.filter((a) => !a.startsWith('--'))
+  const flag = (name: string) => argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3)
   const [command, ...rest] = args
   const show = (value: unknown, text: string) => out.log(json ? JSON.stringify(value, null, 2) : text)
   try {
@@ -69,6 +77,29 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
       case 'me': {
         const me = await client.me()
         show(me, `${me.url}\n${me.payments.map((p) => `${p.created_at.slice(0, 16)}  $${p.amount_usd}  ${p.coin}  ${p.status}  ${p.note}`).join('\n') || 'no payments yet'}`)
+        return 0
+      }
+      case 'invoice': {
+        const [to, amount, ...what] = rest
+        if (!to || !amount || !what.length) {
+          out.error('usage: payagent invoice <email> <usd> <what for…> [--coin=x] [--due=YYYY-MM-DD] [--repeat=monthly] [--no-email]')
+          return 2
+        }
+        const coin = flag('coin')
+        const due = flag('due')
+        const repeat = flag('repeat')
+        const i = await client.invoice({ to_email: to, amount_usd: Number(amount), description: what.join(' '), ...(coin ? { coin } : {}), ...(due ? { due_date: due } : {}), ...(repeat ? { recurrence: repeat } : {}), ...(argv.includes('--no-email') ? { email: false } : {}) })
+        show(i, `Invoice ${i.number} for $${i.amount_usd} to ${i.to_email ?? to}${i.recurrence ? `, repeats ${i.recurrence}` : ''}\n${i.url}${i.warning ? `\n${i.warning}` : ''}`)
+        return 0
+      }
+      case 'invoices': {
+        const r = await client.invoices()
+        show(r, r.invoices.map((i) => `${i.created_at.slice(0, 10)}  ${i.number}  $${i.amount_usd}  ${i.to_email}  ${i.status}  ${i.description}`).join('\n') || 'no invoices yet')
+        return 0
+      }
+      case 'invoice-status': {
+        const i = await client.invoiceStatus(rest[0] ?? '')
+        show(i, `${i.number || i.id}: ${i.status}  ${i.url}`)
         return 0
       }
       case 'status': {

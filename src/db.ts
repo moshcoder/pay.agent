@@ -39,13 +39,31 @@ export type PaymentRow = {
   updatedAt: number
 }
 
+/** An invoice: a CoinPay invoice sent as this person, plus what we show for it. */
+export type InvoiceRow = {
+  id: string
+  handle: string
+  number: string
+  toEmail: string
+  toName: string
+  description: string
+  amountUsd: number
+  coin: string
+  dueDate: string | null
+  recurrence: string | null
+  status: string
+  payUrl: string
+  createdAt: number
+  updatedAt: number
+}
+
 export type Tokens = { accessToken: string; refreshToken: string | null; expiresAt: number }
 
 /** Names a handle can never be: they are pages. */
 export const RESERVED = new Set([
   'api', 'auth', 'me', 'start', 'help', 'p', 'pay', 'hooks', 'health', 'login', 'logout', 'signup', 'settings', 'admin',
   'about', 'terms', 'privacy', 'style', 'favicon', 'robots', 'static', 'public', 'assets', 'well-known', 'ring', 'mcp',
-  'coinpay', 'payagent', 'pay-agent', 'agent', 'agents', 'support', 'docs', 'new', 'u', 'www', 'root', 'null', 'undefined',
+  'coinpay', 'payagent', 'invoice', 'invoices', 'pay-agent', 'agent', 'agents', 'support', 'docs', 'new', 'u', 'www', 'root', 'null', 'undefined',
 ])
 
 export function validHandle(handle: string): string | null {
@@ -114,6 +132,23 @@ export class Store {
         updated_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS payments_handle ON payments(handle, created_at DESC);
+      CREATE TABLE IF NOT EXISTS invoices (
+        id TEXT PRIMARY KEY,
+        handle TEXT NOT NULL,
+        number TEXT NOT NULL DEFAULT '',
+        to_email TEXT NOT NULL,
+        to_name TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        amount_usd REAL NOT NULL,
+        coin TEXT NOT NULL,
+        due_date TEXT,
+        recurrence TEXT,
+        status TEXT NOT NULL DEFAULT 'sent',
+        pay_url TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS invoices_handle ON invoices(handle, created_at DESC);
     `)
   }
 
@@ -258,5 +293,47 @@ export class Store {
 
   pendingCount(handle: string, sinceMs: number): number {
     return (this.db.query("SELECT COUNT(*) AS n FROM payments WHERE handle = ? AND status = 'pending' AND created_at > ?").get(handle, sinceMs) as { n: number }).n
+  }
+
+  private toInvoice(row: any): InvoiceRow | null {
+    if (!row) return null
+    return {
+      id: row.id,
+      handle: row.handle,
+      number: row.number,
+      toEmail: row.to_email,
+      toName: row.to_name,
+      description: row.description,
+      amountUsd: row.amount_usd,
+      coin: row.coin,
+      dueDate: row.due_date,
+      recurrence: row.recurrence,
+      status: row.status,
+      payUrl: row.pay_url,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }
+  }
+
+  addInvoice(i: Omit<InvoiceRow, 'createdAt' | 'updatedAt'>, now = Date.now()): void {
+    this.db
+      .query('INSERT OR IGNORE INTO invoices (id, handle, number, to_email, to_name, description, amount_usd, coin, due_date, recurrence, status, pay_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(i.id, i.handle, i.number, i.toEmail, i.toName, i.description, i.amountUsd, i.coin, i.dueDate, i.recurrence, i.status, i.payUrl, now, now)
+  }
+
+  invoice(id: string): InvoiceRow | null {
+    return this.toInvoice(this.db.query('SELECT * FROM invoices WHERE id = ?').get(id))
+  }
+
+  setInvoiceStatus(id: string, status: string, now = Date.now()): void {
+    this.db.query('UPDATE invoices SET status = ?, updated_at = ? WHERE id = ?').run(status, now, id)
+  }
+
+  invoices(handle: string, limit = 50): InvoiceRow[] {
+    return (this.db.query('SELECT * FROM invoices WHERE handle = ? ORDER BY created_at DESC LIMIT ?').all(handle, limit) as any[]).map((r) => this.toInvoice(r)!)
+  }
+
+  invoicesSince(handle: string, sinceMs: number): number {
+    return (this.db.query('SELECT COUNT(*) AS n FROM invoices WHERE handle = ? AND created_at > ?').get(handle, sinceMs) as { n: number }).n
   }
 }

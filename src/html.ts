@@ -5,11 +5,11 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { COINS, type OnboardStep } from '@profullstack/coinpay-onboard'
-import type { PaymentRow, User } from './db.js'
+import type { InvoiceRow, PaymentRow, User } from './db.js'
 import { pitFooter } from './pit-footer.js'
 import { ringFooter } from './ring-footer.js'
 import { RING_PLACEHOLDER } from './ring.js'
-import { coinName, PAID } from './service.js'
+import { coinName, PAID, RECURRENCES, type InvoiceLive } from './service.js'
 
 export const SITE = 'https://pay.agent'
 export const REPO = 'https://github.com/moshcoder/pay.agent'
@@ -145,8 +145,14 @@ POST /api/v1/users/:handle/payments        {"amount_usd": 5, "coin": "usdc_sol",
 GET  /api/v1/payments/:id                  status: pending, confirmed, forwarded, expired</pre>
 <p>Your own payments, with the API key from <a href="/me">My link</a>:</p>
 <pre>GET  /api/v1/me                            -H 'authorization: Bearer pa_…'</pre>
+<p id="invoices">Invoices, sent through CoinPay as you (CoinPay emails the pay link; a repeat sends the next ones):</p>
+<pre>POST /api/v1/invoices                      {"to_email": "pat@example.com", "description": "Logo", "amount_usd": 49,
+                                            "due_date": "2026-11-30", "recurrence": "monthly", "email": true}
+GET  /api/v1/invoices                      yours, with the key
+GET  /api/v1/invoices/:id                  public: status (sent, paid, overdue), address, exact amount</pre>
 <pre>bunx @profullstack/payagent alice 5 usdc_sol              pay alice $5 in USDC on Solana
 bunx @profullstack/payagent status &lt;payment-id&gt;
+bunx @profullstack/payagent invoice pat@example.com 49 Logo --repeat=monthly
 bunx @profullstack/payagent                               the TUI
 claude mcp add payagent -- bunx @profullstack/payagent mcp</pre></div>
 <div class="card"><h2>Your data</h2><p>We keep your CoinPay name and email, your handle, which business your link pays, and your CoinPay sign-in (encrypted). Payments to you are listed for you only. Sign out removes the session; to delete everything, use <b>Delete my link</b> on <a href="/me">My link</a>.</p></div>
@@ -217,7 +223,9 @@ function linkBox(origin: string, handle: string): string {
 <div class="address"><code>${esc(url)}</code><button class="copy" type="button" data-copy="${esc(url)}">Copy</button></div>`
 }
 
-export function dashboardPage(ctx: Ctx, o: { user: User; payments: PaymentRow[]; apiKey?: string; qr: string; flash?: string }): string {
+export function dashboardPage(ctx: Ctx, o: { user: User; payments: PaymentRow[]; invoices?: InvoiceRow[]; apiKey?: string; qr: string; flash?: string; invoiceForm?: Record<string, string> }): string {
+  const f = o.invoiceForm ?? {}
+  const invoices = o.invoices ?? []
   const u = o.user
   const received = o.payments.filter((p) => PAID.has(p.status)).reduce((sum, p) => sum + p.amountUsd, 0)
   return layout({
@@ -234,6 +242,16 @@ ${o.flash ? `<p class="note">${esc(o.flash)}</p>` : ''}
 <form method="post" action="/me/recheck"><input type="hidden" name="csrf" value="${esc(ctx.csrf)}"><button class="copy">Re-check coins</button></form></div>
 <div class="card"><h2>Ask for an amount</h2><p class="muted small">A link with the amount filled in.</p>
 <form method="get" action="/${esc(u.handle)}" class="row"><input name="amount" inputmode="decimal" placeholder="Amount (USD)"><input name="note" maxlength="140" placeholder="What for (optional)"><button class="btn">Make link</button></form></div>
+<div class="card" id="invoice"><h2>Send an invoice</h2><p class="muted small">CoinPay emails them a pay link for the exact amount. Repeat it and CoinPay sends the next ones by itself.</p>
+<form method="post" action="/me/invoice"><input type="hidden" name="csrf" value="${esc(ctx.csrf)}">
+<div class="row"><input name="to_email" type="email" required maxlength="254" placeholder="Their email" value="${esc(f.to_email ?? '')}"><input name="to_name" maxlength="80" placeholder="Their name (optional)" value="${esc(f.to_name ?? '')}"></div>
+<input name="description" required maxlength="500" placeholder="What for" value="${esc(f.description ?? '')}">
+<div class="row"><input name="amount" required inputmode="decimal" placeholder="Amount (USD)" value="${esc(f.amount ?? '')}"><select name="coin" aria-label="Paid in">${u.coins.map((c) => `<option value="${esc(c)}" ${f.coin === c ? 'selected' : ''}>${esc(coinName(c))}</option>`).join('')}</select></div>
+<div class="row"><label class="small">Due <input name="due_date" type="date" value="${esc(f.due_date ?? '')}"></label><label class="small">Repeat <select name="recurrence">${['none', ...RECURRENCES].map((r) => `<option value="${r}" ${f.recurrence === r ? 'selected' : ''}>${r === 'none' ? 'once' : r}</option>`).join('')}</select></label></div>
+<p><button class="btn"${u.coins.length ? '' : ' disabled'}>Send invoice</button></p></form>
+${invoices.length ? `<table><thead><tr><th>No.</th><th>To</th><th>Amount</th><th>For</th><th>Status</th></tr></thead><tbody>${invoices
+      .map((i) => `<tr><td>${esc(i.number)}</td><td>${esc(i.toName || i.toEmail)}</td><td>${usd(i.amountUsd)}${i.recurrence ? ` <span class="muted small">${esc(i.recurrence)}</span>` : ''}</td><td>${esc(i.description.slice(0, 60))}</td><td><a class="status ${esc(i.status)}" href="/i/${esc(i.id)}">${esc(i.status)}</a></td></tr>`)
+      .join('')}</tbody></table>` : ''}</div>
 <div class="card"><h2>Payments</h2>${o.payments.length ? `<table><thead><tr><th>When</th><th>Amount</th><th>Coin</th><th>Note</th><th>Status</th></tr></thead><tbody>${o.payments
       .map((p) => `<tr><td>${esc(new Date(p.createdAt).toISOString().slice(0, 16).replace('T', ' '))}</td><td>${usd(p.amountUsd)}</td><td>${esc(p.coin.toUpperCase())}</td><td>${esc(p.note)}</td><td><a class="status ${esc(p.status)}" href="/p/${esc(p.id)}">${esc(p.status)}</a></td></tr>`)
       .join('')}</tbody></table>` : '<p class="muted">None yet.</p>'}</div>
@@ -296,6 +314,35 @@ export function checkoutPage(ctx: Ctx, o: { payment: PaymentRow; payee: User | n
 </div>
 <div class="card center" id="paid-box" ${paid ? '' : 'hidden'}><h2 class="ok">Paid. Thank you.</h2><p class="muted">CoinPay has the payment and forwards it to ${esc(o.payee?.name || p.handle)}.</p></div>
 <p class="center muted small"><a href="/${esc(p.handle)}">Back</a> · Payment ${esc(p.id)}</p>`,
+  })
+}
+
+export function invoicePage(ctx: Ctx, o: { invoice: InvoiceRow; live: InvoiceLive | null; payee: User | null; qr: string; emailed: boolean }): string {
+  const i = o.invoice
+  const paid = i.status === 'paid'
+  const from = o.payee?.name || i.handle
+  const open = !paid && o.live?.address
+  return layout({
+    ctx,
+    noindex: true,
+    title: `Invoice ${i.number || ''} from ${from} · pay.agent`.replace('  ', ' '),
+    description: `${usd(i.amountUsd)} for ${i.description}`,
+    path: `/i/${i.id}`,
+    body: `<section class="payee" style="padding-top:2rem"><p class="muted" style="margin:0">Invoice${i.number ? ` ${esc(i.number)}` : ''} from ${esc(from)} · pay.agent/${esc(i.handle)}</p>
+<p class="amount">${usd(i.amountUsd)}</p><p>${esc(i.description)}</p>
+<p class="muted small">To ${esc(i.toName || 'you')}${i.dueDate ? ` · due ${esc(i.dueDate)}` : ''}${i.recurrence ? ` · repeats ${esc(i.recurrence)}` : ''}</p>
+<p><span class="status ${esc(i.status)}">${esc(i.status)}</span></p></section>
+${o.emailed ? '' : '<p class="note">The invoice is live, but CoinPay did not email it. Send them this page.</p>'}
+${open ? `<div class="card">
+  <p class="center">Send exactly</p>
+  <p class="amount" style="font-size:1.6rem">${esc(o.live!.amountCrypto)} <span class="muted">${esc(coinName(i.coin))}</span></p>
+  <div class="address"><code>${esc(o.live!.amountCrypto)}</code><button class="copy" type="button" data-copy="${esc(o.live!.amountCrypto)}">Copy amount</button></div>
+  ${o.qr}
+  <p class="center muted small">to this address</p>
+  <div class="address"><code>${esc(o.live!.address)}</code><button class="copy" type="button" data-copy="${esc(o.live!.address)}">Copy</button></div>
+  <p class="muted small center">In one payment, on the right network. Or <a href="${esc(i.payUrl)}">pay it on CoinPay</a>, where you can also download a PDF.</p>
+</div>` : paid ? `<div class="card center"><h2 class="ok">Paid. Thank you.</h2><p class="muted">CoinPay has the payment and forwards it to ${esc(from)}.</p></div>` : `<p class="center"><a class="btn big" href="${esc(i.payUrl)}">Pay on CoinPay</a></p>`}
+<p class="center muted small">Paid in crypto through <a href="https://coinpayportal.com">CoinPay</a>. Want to send invoices too? <a href="/">Get a pay link</a></p>`,
   })
 }
 
