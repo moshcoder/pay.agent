@@ -167,6 +167,7 @@ describe('pay.agent end to end', () => {
     expect(home.headers.get('content-security-policy')).toContain("frame-ancestors 'none'")
     const html = await home.text()
     expect(html).toContain('ring-bar')
+    expect(html).toContain('<a class="ring-start" href="https://pit.world/start">Start building here…</a>')
     expect(html).toContain('Start with CoinPay')
     const csp = home.headers.get('content-security-policy')!
     for (const d of ['script-src', 'connect-src', 'frame-src']) expect(csp).toMatch(new RegExp(`${d} [^;]*https://crawlproof\\.com`))
