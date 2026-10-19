@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { COINS, type OnboardStep } from '@profullstack/coinpay-onboard'
 import type { PaymentRow, User } from './db.js'
+import { pitFooter } from './pit-footer.js'
 import { RING_PLACEHOLDER } from './ring.js'
 import { coinName, PAID } from './service.js'
 
@@ -40,7 +41,7 @@ const LOGO = `<svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="
 
 export type Ctx = { user: User | null; origin: string; csrf: string }
 
-/** ads: a text-link ad above the footer. Leave it off wherever someone pays, signs in or enters anything. */
+/** ads: a text-link ad at the top of the content (never at the footer). Leave it off wherever someone pays, signs in or enters anything. */
 type LayoutOptions = { title: string; description: string; path: string; body: string; ctx: Ctx; noindex?: boolean; script?: boolean; ads?: boolean }
 
 function layout(o: LayoutOptions): string {
@@ -76,13 +77,13 @@ ${RING_PLACEHOLDER}
   </nav>
 </header>
 <main>
+${o.ads ? adUnit('text_link') : ''}
 ${o.body}
 </main>
-${o.ads ? adUnit('text_link') : ''}
 <footer>
-  <span>pay.agent: get paid in crypto with one link. Payments by <a href="${COINPAY}">CoinPay</a>.</span>
-  <span><a href="/help">Help</a> · <a href="${REPO}">Source</a> · <a href="https://pit.world/ring">Moshpit ring</a></span>
+  <span>© pay.agent · <a href="/help">Help</a> · <a href="${REPO}">Source</a> · Payments by <a href="${COINPAY}">CoinPay</a></span>
 </footer>
+${pitFooter()}
 </body>
 </html>`
 }
@@ -105,14 +106,14 @@ export function homePage(ctx: Ctx): string {
   <div class="card"><h2><span class="step-n">2</span>Pick a name</h2><p class="muted"><code>pay.agent/yourname</code>, and where the money goes: your wallet or your business.</p></div>
   <div class="card"><h2><span class="step-n">3</span>Share it</h2><p class="muted">Paste it anywhere. Payers pick an amount and a coin, scan, done. You see it arrive.</p></div>
 </div>
+${adUnit('banner_300x250')}
 <div class="card" id="agents">
   <h2>Built for agents too</h2>
   <p class="muted">Every pay link is an API. An agent asks for an address and an exact amount, pays, and checks it landed:</p>
   <pre>curl -X POST https://pay.agent/api/v1/users/alice/payments \\
   -H 'content-type: application/json' -d '{"amount_usd": 5, "coin": "usdc_sol"}'</pre>
   <p class="muted small">Also a CLI (<code>bunx @profullstack/payagent</code>) and an MCP server (<code>bunx @profullstack/payagent mcp</code>). <a href="/help#agents">How</a></p>
-</div>
-${adUnit('banner_300x250')}`,
+</div>`,
   })
 }
 

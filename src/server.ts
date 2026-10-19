@@ -16,6 +16,7 @@ import { authorizeUrl, exchangeCode, pkce } from '@profullstack/coinpay-onboard/
 import { CoinPay } from '@profullstack/coinpay-onboard'
 import { Sealer, Store, type User } from './db.js'
 import { checkoutPage, dashboardPage, helpPage, homePage, messagePage, payPage, setupDonePage, wizardPage, type Ctx } from './html.js'
+import { startPitFooterRefresh } from './pit-footer.js'
 import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from './ring.js'
 import { PayAgent, SetupError, type Config } from './service.js'
 import { VERSION } from './version.js'
@@ -328,6 +329,7 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
   })
   const trustProxy = (env.PAYAGENT_TRUST_PROXY ?? '1') === '1'
   startRingRefresh()
+  startPitFooterRefresh('pay.agent')
   return Bun.serve({
     port: options.port ?? Number(env.PORT ?? 8796),
     hostname: options.hostname ?? env.HOST ?? '127.0.0.1',
