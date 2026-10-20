@@ -188,7 +188,7 @@ export function createApp(deps: Deps) {
   })
 
   // The owner's page.
-  const dashboard = async (c: Context, extra: { apiKey?: string; flash?: string; invoiceForm?: Record<string, string> } = {}) => {
+  const dashboard = async (c: Context, extra: { apiKey?: string; flash?: string; coinsNote?: string; invoiceForm?: Record<string, string> } = {}) => {
     const ctx = ctxOf(c)
     const user = ctx.user!
     if (!user.handle) return c.redirect('/start')
@@ -206,10 +206,11 @@ export function createApp(deps: Deps) {
     switch (c.req.param('action')) {
       case 'recheck':
         try {
+          const before = user.coins
           const coins = await agent.recheck(user)
-          return dashboard(c, { flash: coins.length ? `Your link takes ${coins.length} coin(s).` : 'Still no payout address on your CoinPay account.' })
+          return dashboard(c, { coinsNote: PayAgent.recheckMessage(before, coins) })
         } catch (e) {
-          return dashboard(c, { flash: `CoinPay: ${e instanceof Error ? e.message : e}` })
+          return dashboard(c, { coinsNote: `CoinPay did not answer: ${e instanceof Error ? e.message : e}` })
         }
       case 'key': {
         const key = `pa_${randomBytes(24).toString('base64url')}`

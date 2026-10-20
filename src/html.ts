@@ -223,7 +223,7 @@ function linkBox(origin: string, handle: string): string {
 <div class="address"><code>${esc(url)}</code><button class="copy" type="button" data-copy="${esc(url)}">Copy</button></div>`
 }
 
-export function dashboardPage(ctx: Ctx, o: { user: User; payments: PaymentRow[]; invoices?: InvoiceRow[]; apiKey?: string; qr: string; flash?: string; invoiceForm?: Record<string, string> }): string {
+export function dashboardPage(ctx: Ctx, o: { user: User; payments: PaymentRow[]; invoices?: InvoiceRow[]; apiKey?: string; qr: string; flash?: string; coinsNote?: string; invoiceForm?: Record<string, string> }): string {
   const f = o.invoiceForm ?? {}
   const invoices = o.invoices ?? []
   const u = o.user
@@ -237,9 +237,10 @@ export function dashboardPage(ctx: Ctx, o: { user: User; payments: PaymentRow[];
     script: true,
     body: `<section class="hero" style="padding-bottom:1rem"><h1>Hi${u.name ? `, ${esc(u.name.split(' ')[0])}` : ''}.</h1><p class="tag">${received ? `${usd(received)} received through your link so far.` : 'Share your link to get paid.'}</p></section>
 ${o.flash ? `<p class="note">${esc(o.flash)}</p>` : ''}
-<div class="card center">${linkBox(ctx.origin, u.handle!)}${o.qr}
+<div class="card center" id="coins">${linkBox(ctx.origin, u.handle!)}${o.qr}
 <p class="muted small">Takes ${u.coins.length ? esc(u.coins.map(coinName).join(', ')) : '<b>nothing yet: add a payout address</b>'} · pays ${u.mode === 'business' ? `your business <b>${esc(u.businessName)}</b>` : 'your CoinPay wallet'}</p>
-<form method="post" action="/me/recheck"><input type="hidden" name="csrf" value="${esc(ctx.csrf)}"><button class="copy">Re-check coins</button></form></div>
+<form method="post" action="/me/recheck#coins"><input type="hidden" name="csrf" value="${esc(ctx.csrf)}"><button class="copy">Re-check coins</button></form>
+${o.coinsNote ? `<p class="note" role="status">${esc(o.coinsNote)}</p>` : ''}</div>
 <div class="card"><h2>Ask for an amount</h2><p class="muted small">A link with the amount filled in.</p>
 <form method="get" action="/${esc(u.handle)}" class="row"><input name="amount" inputmode="decimal" placeholder="Amount (USD)"><input name="note" maxlength="140" placeholder="What for (optional)"><button class="btn">Make link</button></form></div>
 <div class="card" id="invoice"><h2>Send an invoice</h2><p class="muted small">CoinPay emails them a pay link for the exact amount. Repeat it and CoinPay sends the next ones by itself.</p>
