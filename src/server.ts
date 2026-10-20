@@ -114,7 +114,12 @@ export function createApp(deps: Deps) {
     const { verifier, challenge } = pkce()
     const redirectUri = `${origin(c)}/auth/callback`
     store.saveState(state, verifier, redirectUri)
-    return c.redirect(authorizeUrl({ clientId: config.clientId, redirectUri, state, challenge, base: config.coinpayBase }))
+    // Always show CoinPay's consent screen: it names the signed-in account and
+    // offers a different one. Without it an approved app signs in silently as
+    // whoever holds the CoinPay session.
+    const url = new URL(authorizeUrl({ clientId: config.clientId, redirectUri, state, challenge, base: config.coinpayBase }))
+    url.searchParams.set('prompt', 'select_account')
+    return c.redirect(url.toString())
   })
 
   app.get('/auth/callback', async (c) => {

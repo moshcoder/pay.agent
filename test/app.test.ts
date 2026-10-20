@@ -99,6 +99,7 @@ describe('pay.agent end to end', () => {
     expect(loc.origin + loc.pathname).toBe('https://cp.test/api/oauth/authorize')
     expect(loc.searchParams.get('redirect_uri')).toBe('https://pay.agent/auth/callback')
     expect(loc.searchParams.get('scope')).toContain('merchant')
+    expect(loc.searchParams.get('prompt')).toBe('select_account')
 
     const cb = await t.req(`/auth/callback?code=c1&state=${loc.searchParams.get('state')}`)
     expect(cb.headers.get('location')).toBe('/start')
