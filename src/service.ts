@@ -116,6 +116,23 @@ export class PayAgent {
     return { steps: r.steps, coins }
   }
 
+  /** What a re-check found, in words: what changed, and what a new wallet would add. */
+  static recheckMessage(before: string[], after: string[]): string {
+    const added = after.filter((c) => !before.includes(c))
+    const dropped = before.filter((c) => !after.includes(c))
+    const missing = COINS.filter((c) => !after.includes(c.id)).map((c) => c.name)
+    const names = (ids: string[]) => ids.map(coinName).join(', ')
+    const parts = [
+      added.length || dropped.length
+        ? [added.length ? `Added ${names(added)}.` : '', dropped.length ? `Dropped ${names(dropped)}: no wallet for it on CoinPay now.` : ''].filter(Boolean).join(' ')
+        : after.length
+          ? `Checked CoinPay: no change, your link still takes ${after.length} coin${after.length === 1 ? '' : 's'}.`
+          : 'Checked CoinPay: still no payout wallet on your account.',
+    ]
+    if (missing.length) parts.push(`To take ${missing.join(', ')} too, add a wallet for it in CoinPay, then check again.`)
+    return parts.join(' ')
+  }
+
   /** Re-reads which coins the link can take (after they add a wallet in CoinPay). */
   async recheck(user: User): Promise<string[]> {
     if (!user.businessId) return []
