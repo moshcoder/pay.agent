@@ -193,8 +193,11 @@ describe('pay.agent end to end', () => {
     const csp = home.headers.get('content-security-policy')!
     for (const d of ['script-src', 'connect-src', 'frame-src']) expect(csp).toMatch(new RegExp(`${d} [^;]*https://crawlproof\\.com`))
     expect(html).toContain('data-site="88fcc3cd-2374-47da-8fbb-5cc2ae2e7499"')
-    expect(html).toContain('format=banner_300x250')
-    expect(html).toContain('format=text_link')
+    // No ad on the home page; /help carries one low-profile text_link line.
+    expect(html).not.toContain('crawlproof.com/api/ads')
+    const helpHtml = await (await t.req('/help')).text()
+    expect(helpHtml).toContain('format=text_link')
+    expect(helpHtml).not.toContain('format=banner_300x250')
     // No ad in or pressed against the footer.
     expect(html.slice(html.indexOf('<footer'))).not.toContain('ad-unit')
     expect(html).not.toMatch(/<\/iframe><\/div>\s*<\/main>/)
