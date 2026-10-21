@@ -78,12 +78,8 @@ table { width: 100%; border-collapse: collapse; font-size: .92rem; }
 th, td { text-align: left; padding: .5rem .4rem; border-bottom: 1px solid var(--line); }
 th { color: var(--muted); font-weight: 600; }
 .center { text-align: center; }
-.ad-unit { margin: 24px auto; display: flex; justify-content: center; }
-.ad-unit iframe { border: 0; display: block; background: transparent; }
-.ad-text_link { max-width: 760px; padding: 0 16px; }
-.ad-text_link iframe { width: 100%; height: 40px; }
-.ad-banner_300x250 iframe { width: 300px; height: 250px; }
-@media (max-width: 340px) { .ad-banner_300x250 { margin-inline: calc(50% - 50vw); } }
+.ad-unit { max-width: 760px; margin: 10px auto; padding: 0 16px; }
+.ad-unit iframe { border: 0; display: block; background: transparent; width: 100%; height: 40px; }
 details summary { cursor: pointer; font-weight: 600; }
 /* the Moshpit ring bar (pit.world/ring), on every page */
 .ring-bar { display: flex; align-items: center; gap: 4px 16px; padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--panel); font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: nowrap; overflow-x: auto; scrollbar-width: none; }

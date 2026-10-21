@@ -24,8 +24,8 @@ const TRACKER = '<script data-site="88fcc3cd-2374-47da-8fbb-5cc2ae2e7499" src="h
  * address. CRAWLPROOF_AD_SLOT overrides the slot; 'off' turns ads off.
  */
 export const AD_SLOT = process.env.CRAWLPROOF_AD_SLOT ?? 'b479d9b7-3843-44f3-86f7-bbf0b4f76675'
-export const adUnit = (format: 'banner_300x250' | 'text_link') =>
-  AD_SLOT === 'off' ? '' : `<div class="ad-unit ad-${format}"><iframe src="https://crawlproof.com/api/ads/frame?slot=${encodeURIComponent(AD_SLOT)}&amp;format=${format}" title="Advertisement" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation" scrolling="no"></iframe></div>`
+export const adUnit = () =>
+  AD_SLOT === 'off' ? '' : `<div class="ad-unit"><iframe src="https://crawlproof.com/api/ads/frame?slot=${encodeURIComponent(AD_SLOT)}&amp;format=text_link" title="Advertisement" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation" scrolling="no"></iframe></div>`
 
 const asset = (name: string) => {
   const body = readFileSync(new URL(`../public/${name}`, import.meta.url))
@@ -42,7 +42,7 @@ const LOGO = `<svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="
 
 export type Ctx = { user: User | null; origin: string; csrf: string }
 
-/** ads: a text-link ad at the top of the content (never at the footer). Leave it off wherever someone pays, signs in or enters anything. */
+/** ads: one text-link ad at the top of the content (never at the footer, never on the home page). Leave it off wherever someone pays, signs in or enters anything. */
 type LayoutOptions = { title: string; description: string; path: string; body: string; ctx: Ctx; noindex?: boolean; script?: boolean; ads?: boolean }
 
 function layout(o: LayoutOptions): string {
@@ -78,7 +78,7 @@ ${RING_PLACEHOLDER}
   </nav>
 </header>
 <main>
-${o.ads ? adUnit('text_link') : ''}
+${o.ads ? adUnit() : ''}
 ${o.body}
 </main>
 ${ringFooter()}
@@ -93,7 +93,6 @@ export function homePage(ctx: Ctx): string {
     title: 'pay.agent: get paid in crypto with one link',
     description: 'Your own pay link in a minute. Anyone, person or agent, pays you in USDC, BTC, ETH, SOL and more, straight to your CoinPay wallet or business.',
     path: '/',
-    ads: true,
     body: `<section class="hero">
   <h1>Get paid in crypto.<br>One link.</h1>
   <p class="tag">Sign in with CoinPay, pick a name, and share <b>pay.agent/you</b>. People and agents pay you in USDC, BTC, ETH, SOL and more. It lands in your CoinPay wallet or business.</p>
@@ -105,7 +104,6 @@ export function homePage(ctx: Ctx): string {
   <div class="card"><h2><span class="step-n">2</span>Pick a name</h2><p class="muted"><code>pay.agent/yourname</code>, and where the money goes: your wallet or your business.</p></div>
   <div class="card"><h2><span class="step-n">3</span>Share it</h2><p class="muted">Paste it anywhere. Payers pick an amount and a coin, scan, done. You see it arrive.</p></div>
 </div>
-${adUnit('banner_300x250')}
 <div class="card" id="agents">
   <h2>Built for agents too</h2>
   <p class="muted">Every pay link is an API. An agent asks for an address and an exact amount, pays, and checks it landed:</p>
