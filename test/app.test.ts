@@ -116,6 +116,13 @@ describe('pay.agent end to end', () => {
     expect(done).toContain('You can get paid.')
     expect(t.cp.state.businesses[0]).toMatchObject({ name: 'pay.agent/alice', webhook_url: 'https://pay.agent.pit.world/hooks/coinpay' })
 
+    // A bot fills the hidden honeypot: no payment is made.
+    const bot = await t.req('/alice', { method: 'POST', form: { amount: '$12.50', coin: 'usdc_sol', website: 'https://spam.example' } })
+    expect(bot.status).toBe(303)
+    expect(bot.headers.get('location')).toBe('/alice')
+    expect(t.cp.state.lastPaymentBody).toBeNull()
+    expect(await (await t.req('/alice')).text()).toContain('name="website"')
+
     // A stranger pays the link.
     const pay = await t.req('/alice', { method: 'POST', form: { amount: '$12.50', coin: 'usdc_sol', note: 'pizza' } })
     expect(pay.status).toBe(302)

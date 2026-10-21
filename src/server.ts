@@ -368,6 +368,8 @@ export function createApp(deps: Deps) {
     const payee = store.byHandle(c.req.param('handle'))
     if (!payee?.handle) return page(c, messagePage(ctxOf(c), { title: 'No such pay link', message: 'Nobody has that name yet.' }), 404)
     const form = (await c.req.parseBody()) as Record<string, string>
+    // Honeypot: people never see the website field, so a filled one is a bot. Back to the link, no payment made.
+    if (typeof form.website === 'string' && form.website !== '') return c.redirect(`/${payee.handle}`, 303)
     if (!payLimit.allow(`pay:${ip(c)}`)) return page(c, payPage(ctxOf(c), { payee, ...form, error: 'Too many payments from you. Wait a few minutes.' }), 429)
     try {
       const p = await agent.pay(payee.handle, { amountUsd: Number(String(form.amount ?? '').replace(/[$,\s]/g, '')), coin: form.coin, note: form.note, payer: form.payer })

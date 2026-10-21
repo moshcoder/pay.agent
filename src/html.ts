@@ -283,6 +283,7 @@ ${can ? `<form method="post" action="/${esc(p.handle)}" class="card">
   <input id="note" name="note" maxlength="140" value="${esc(o.note ?? '')}">
   <label for="payer">Your name <span class="muted">(optional)</span></label>
   <input id="payer" name="payer" maxlength="60">
+  <input class="hp" name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true">
   <p style="margin-top:1.2rem"><button class="btn wide big">Pay</button></p>
 </form>` : `<p class="note">${esc(p.handle)} cannot take payments yet.</p>`}
 <p class="center muted small">Want your own? <a href="/">Get a pay link</a></p>`,
