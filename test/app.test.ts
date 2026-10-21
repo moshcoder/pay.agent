@@ -8,7 +8,7 @@ import { PayAgentClient } from '../src/client.ts'
 
 /** CoinPay, faked: OAuth, businesses, wallets, payments. */
 function fakeCoinPay() {
-  const state = { businesses: [] as any[], accountWallets: [{ cryptocurrency: 'USDC_SOL', wallet_address: 'So1Payout' }] as any[], payments: new Map<string, any>(), refreshes: 0, lastPaymentBody: null as any, invoices: new Map<string, any>(), clients: [] as any[], invoiceAuth: [] as string[] }
+  const state = { businesses: [] as any[], accountWallets: [{ cryptocurrency: 'USDC_SOL', wallet_address: 'So1Payout' }] as any[], payments: new Map<string, any>(), refreshes: 0, lastPaymentBody: null as any, sessions: new Map<string, any>(), lastSessionBody: null as any, sessionAuth: [] as string[], invoices: new Map<string, any>(), clients: [] as any[], invoiceAuth: [] as string[] }
   const fetchImpl = (async (url: string | URL, init: RequestInit = {}) => {
     const u = new URL(String(url))
     const method = init.method ?? 'GET'
@@ -33,6 +33,20 @@ function fakeCoinPay() {
       const p = { id: `pay${state.payments.size + 1}`, status: 'pending', payment_address: 'So1Deposit', amount_usd: body.amount_usd, amount_crypto: String(body.amount_usd), currency: body.currency, blockchain: 'USDC_SOL', expires_at: '2030-01-01T00:00:00Z' }
       state.payments.set(p.id, p)
       return json(201, { success: true, payment: p })
+    }
+    if (path === '/api/checkout/sessions' && method === 'POST') {
+      state.lastSessionBody = body
+      state.sessionAuth.push(new Headers(init.headers).get('authorization') ?? '')
+      if (!body.business_id) return json(400, { success: false, error: 'business_id is required' })
+      const id = `cs_test${state.sessions.size + 1}`
+      const sess = { id, url: `https://cp.test/checkout/${id}`, status: 'open', amount: body.amount, currency: body.currency, property: body.property, methods: ['USDC_SOL', 'BTC', 'PAYPAL'], expires_at: '2030-01-01T00:00:00Z' }
+      state.sessions.set(id, sess)
+      return json(201, { success: true, ...sess })
+    }
+    const cs = /^\/api\/checkout\/sessions\/(cs_test\d+)$/.exec(path)
+    if (cs) {
+      const sess = state.sessions.get(cs[1]!)
+      return sess ? json(200, { success: true, session: sess }) : json(404, { success: false, error: 'Checkout session not found' })
     }
     if (path === '/api/clients' && method === 'POST') {
       const c = { id: `cl${state.clients.length + 1}`, ...body }
@@ -117,29 +131,63 @@ describe('pay.agent end to end', () => {
     expect(t.cp.state.businesses[0]).toMatchObject({ name: 'pay.agent/alice', webhook_url: 'https://pay.agent.pit.world/hooks/coinpay' })
 
     // A bot fills the hidden honeypot: no payment is made.
-    const bot = await t.req('/alice', { method: 'POST', form: { amount: '$12.50', coin: 'usdc_sol', website: 'https://spam.example' } })
+    const bot = await t.req('/alice', { method: 'POST', form: { amount: '$12.50', email: 'bot@example.com', website: 'https://spam.example' } })
     expect(bot.status).toBe(303)
     expect(bot.headers.get('location')).toBe('/alice')
-    expect(t.cp.state.lastPaymentBody).toBeNull()
-    expect(await (await t.req('/alice')).text()).toContain('name="website"')
+    expect(t.cp.state.lastSessionBody).toBeNull()
+    const payHtml = await (await t.req('/alice')).text()
+    expect(payHtml).toContain('name="website"')
+    expect(payHtml).toContain('name="email" type="email" required')
+    // No coin picker of our own: CoinPay's checkout offers every coin, and PayPal.
+    expect(payHtml).not.toContain('name="coin"')
 
-    // A stranger pays the link.
-    const pay = await t.req('/alice', { method: 'POST', form: { amount: '$12.50', coin: 'usdc_sol', note: 'pizza' } })
-    expect(pay.status).toBe(302)
-    const pid = pay.headers.get('location')!.split('/').pop()!
-    expect(t.cp.state.lastPaymentBody).toMatchObject({ business_id: 'b1', amount_usd: 12.5, currency: 'usdc_sol' })
-    const checkout = await (await t.req(`/p/${pid}`)).text()
-    expect(checkout).toContain('So1Deposit')
-    expect(checkout).toContain('<svg class="qr"')
+    // No email, no checkout.
+    const noEmail = await t.req('/alice', { method: 'POST', form: { amount: '5' } })
+    expect(noEmail.status).toBe(400)
+    expect(await noEmail.text()).toContain('Your email, for the receipt.')
+    expect(t.cp.state.lastSessionBody).toBeNull()
+
+    // A stranger pays the link: a checkout session on alice's own business, as alice.
+    const pay = await t.req('/alice', { method: 'POST', form: { amount: '$12.50', email: 'Pat@Example.com', note: 'pizza', payer: 'Pat' } })
+    expect(pay.status).toBe(303)
+    expect(pay.headers.get('location')).toBe('https://cp.test/checkout/cs_test1')
+    const sb = t.cp.state.lastSessionBody
+    expect(sb).toMatchObject({ business_id: 'b1', amount: 12.5, currency: 'USD', customer_email: 'pat@example.com', account_id: 'pat@example.com', property: 'pay.agent.pit.world', cancel_url: 'https://pay.agent/alice', description: 'pay.agent/alice: pizza' })
+    expect(sb.metadata).toMatchObject({ via: 'pay.agent', handle: 'alice', note: 'pizza', payer: 'Pat' })
+    const pid = sb.metadata.payagent_id as string
+    expect(pid).toMatch(/^pl_[0-9a-f]{24}$/)
+    expect(sb.success_url).toBe(`https://pay.agent/p/${pid}?session={CHECKOUT_SESSION_ID}`)
+    expect(t.cp.state.sessionAuth[0]).toMatch(/^Bearer at-/)
+    expect(sb.payment_method).toBeUndefined()
+    expect(t.cp.state.lastPaymentBody).toBeNull()
+    expect(t.store.payment(pid)).toMatchObject({ sessionId: 'cs_test1', checkoutUrl: 'https://cp.test/checkout/cs_test1', payerEmail: 'pat@example.com', status: 'pending', handle: 'alice' })
+    const checkout = await (await t.req(`/p/${pid}?session=cs_test1`)).text()
+    expect(checkout).toContain('https://cp.test/checkout/cs_test1')
     expect(checkout).not.toContain('ad-unit')
     expect(await (await t.req('/alice')).text()).not.toContain('ad-unit')
 
-    // CoinPay says it is paid.
-    const event = JSON.stringify({ id: 'evt_1', type: 'payment.forwarded', business_id: 'b1', data: { payment_id: pid, status: 'forwarded' } })
     const secret = t.cp.state.businesses[0].webhook_secret
-    expect((await t.req('/hooks/coinpay', { method: 'POST', body: event, headers: { 'x-coinpay-signature': signWebhook(event, 'wrong') } })).status).toBe(401)
-    expect((await t.req('/hooks/coinpay', { method: 'POST', body: event, headers: { 'x-coinpay-signature': signWebhook(event, secret) } })).status).toBe(200)
+    const hook = (event: unknown, sig?: string) => {
+      const body = JSON.stringify(event)
+      return t.req('/hooks/coinpay', { method: 'POST', body, headers: { 'x-coinpay-signature': sig ?? signWebhook(body, secret) } })
+    }
+    const nested = (type: string, status: string, extra: Record<string, unknown> = {}) => ({ id: `evt_${type}`, type, business_id: 'b1', data: { payment_id: 'pay_cp_9', status, amount_usd: 12.5, checkout_session_id: 'cs_test1', customer_email: 'pat@example.com', account_id: 'pat@example.com', property: 'pay.agent.pit.world', metadata: { via: 'pay.agent', handle: 'alice', payagent_id: pid }, ...extra } })
+
+    // Bad signature: refused, nothing changes.
+    expect((await hook(nested('payment.confirmed', 'confirmed'), signWebhook('{}', 'wrong'))).status).toBe(401)
+    expect(t.store.payment(pid)!.status).toBe('pending')
+    // An expired payment inside the session does not end it (the payer may switch coins).
+    expect((await hook(nested('payment.expired', 'expired'))).status).toBe(200)
+    expect(t.store.payment(pid)!.status).toBe('pending')
+    // Confirmed, then forwarded: paid, by checkout_session_id; replays change nothing.
+    expect((await hook(nested('payment.confirmed', 'confirmed', { blockchain: 'USDC_SOL' }))).status).toBe(200)
+    expect(t.store.payment(pid)).toMatchObject({ status: 'confirmed', paymentId: 'pay_cp_9', coin: 'usdc_sol' })
+    expect((await hook(nested('payment.forwarded', 'forwarded'))).status).toBe(200)
     expect(t.store.payment(pid)!.status).toBe('forwarded')
+    expect((await hook(nested('payment.confirmed', 'confirmed'))).status).toBe(200)
+    expect((await hook(nested('payment.expired', 'expired'))).status).toBe(200)
+    expect(t.store.payment(pid)!.status).toBe('forwarded')
+    expect(await (await t.req(`/p/${pid}`)).text()).toContain('Paid. Thank you.')
 
     // The owner sees it, makes a key, reads it over the API.
     const meHtml = await (await t.req('/me')).text()
@@ -148,7 +196,7 @@ describe('pay.agent end to end', () => {
     const keyPage = await (await t.req('/me/key', { method: 'POST', form: { csrf: /name="csrf" value="([0-9a-f]+)"/.exec(meHtml)![1]! } })).text()
     const key = /(pa_[A-Za-z0-9_-]+)/.exec(keyPage)![1]!
     const api = (await (await t.req('/api/v1/me', { headers: { authorization: `Bearer ${key}` } })).json()) as any
-    expect(api.payments[0]).toMatchObject({ id: pid, status: 'forwarded', note: 'pizza', amount_usd: 12.5 })
+    expect(api.payments[0]).toMatchObject({ id: pid, status: 'forwarded', note: 'pizza', amount_usd: 12.5, session_id: 'cs_test1', coin: 'usdc_sol' })
   })
 
   test('agents pay over the API, and the relay gets relay links', async () => {
@@ -159,13 +207,16 @@ describe('pay.agent end to end', () => {
     await t.req('/start', { method: 'POST', form: { csrf, handle: 'bob', mode: 'wallet' }, headers: relay })
     const who = await (await t.req('/api/v1/users/bob', { headers: relay })).json()
     expect(who).toMatchObject({ handle: 'bob', coins: ['usdc_sol'], url: 'https://pay.agent.pit.world/bob' })
-    const res = await t.req('/api/v1/users/bob/payments', { method: 'POST', body: JSON.stringify({ amount_usd: 3, coin: 'nope' }), headers: { 'content-type': 'application/json' } })
+    expect((await t.req('/api/v1/users/bob/payments', { method: 'POST', body: JSON.stringify({ amount_usd: 3 }), headers: { 'content-type': 'application/json' } })).status).toBe(400)
+    const res = await t.req('/api/v1/users/bob/payments', { method: 'POST', body: JSON.stringify({ amount_usd: 3, payer_email: 'agent@example.com', coin: 'ignored' }), headers: { 'content-type': 'application/json', ...relay } })
     expect(res.status).toBe(201)
     const p = (await res.json()) as any
-    expect(p).toMatchObject({ address: 'So1Deposit', coin: 'usdc_sol', status: 'pending' })
-    t.cp.state.payments.get(p.id).status = 'confirmed'
-    expect(((await (await t.req(`/api/v1/payments/${p.id}`)).json()) as any).status).toBe('confirmed')
-    expect((await t.req('/api/v1/users/bob/payments', { method: 'POST', body: JSON.stringify({ amount_usd: 0.1 }) })).status).toBe(400)
+    expect(p).toMatchObject({ checkout_url: 'https://cp.test/checkout/cs_test1', session_id: 'cs_test1', status: 'pending', coin: null, status_url: `https://pay.agent.pit.world/p/${p.id}` })
+    expect(t.cp.state.lastSessionBody).toMatchObject({ success_url: `https://pay.agent.pit.world/p/${p.id}?session={CHECKOUT_SESSION_ID}`, cancel_url: 'https://pay.agent.pit.world/bob', account_id: 'agent@example.com' })
+    // Following asks CoinPay's session: paid by PayPal.
+    Object.assign(t.cp.state.sessions.get('cs_test1'), { status: 'paid', paid_method: 'PAYPAL' })
+    expect(((await (await t.req(`/api/v1/payments/${p.id}`)).json()) as any)).toMatchObject({ status: 'confirmed', coin: 'paypal' })
+    expect((await t.req('/api/v1/users/bob/payments', { method: 'POST', body: JSON.stringify({ amount_usd: 0.1, payer_email: 'a@b.co' }) })).status).toBe(400)
     expect((await t.req('/api/v1/users/nobody')).status).toBe(404)
   })
 
@@ -226,15 +277,27 @@ describe('terminal', () => {
     onKey(s, { name: 'x', key: 'x', char: 'x' })
     onKey(s, { name: '5', key: '5', char: '5' })
     expect(s.amount).toBe('5')
+    expect(onKey(s, { name: 'tab', key: 'tab' })).toBeNull()
+    for (const ch of 'me@x.co') onKey(s, { name: ch, key: ch, char: ch })
+    expect(s.email).toBe('me@x.co')
     expect(onKey(s, { name: 'enter', key: 'enter' })).toBe('pay')
   })
 
-  test('CLI pays by handle and prints the address', async () => {
+  test('CLI pays by handle and prints the CoinPay checkout link', async () => {
     const lines: string[] = []
-    const client = new PayAgentClient('https://x', undefined, (async () =>
-      new Response(JSON.stringify({ id: 'p1', handle: 'bob', amount_usd: 5, coin: 'usdc_sol', amount_crypto: '5.0', address: 'So1', status: 'pending', expires_at: null, checkout_url: 'https://x/p/p1' }), { status: 201 })) as unknown as typeof fetch)
-    expect(await main(['bob', '5', 'usdc_sol'], { log: (t) => lines.push(t), error: (t) => lines.push(t) }, client)).toBe(0)
-    expect(lines.join('\n')).toContain('Send exactly 5.0 USDC_SOL')
+    let sent: any = null
+    const client = new PayAgentClient('https://x', undefined, (async (_u: string, init: RequestInit) => {
+      sent = JSON.parse(String(init.body))
+      return new Response(JSON.stringify({ id: 'pl_1', handle: 'bob', amount_usd: 5, coin: null, status: 'pending', expires_at: null, checkout_url: 'https://coinpayportal.com/checkout/cs_1', status_url: 'https://x/p/pl_1' }), { status: 201 })
+    }) as unknown as typeof fetch)
+    const out = { log: (t: string) => lines.push(t), error: (t: string) => lines.push(t) }
+    const before = process.env.PAYAGENT_EMAIL
+    delete process.env.PAYAGENT_EMAIL
+    expect(await main(['bob', '5'], out, client)).toBe(2)
+    if (before !== undefined) process.env.PAYAGENT_EMAIL = before
+    expect(await main(['bob', '5', 'for', 'lunch', '--email=me@example.com'], out, client)).toBe(0)
+    expect(sent).toEqual({ amount_usd: 5, payer_email: 'me@example.com', note: 'for lunch' })
+    expect(lines.join('\n')).toContain('https://coinpayportal.com/checkout/cs_1')
   })
 
   test('invoices: send from the page and the API, CoinPay emails, repeats, paid shows', async () => {
@@ -287,5 +350,36 @@ describe('terminal', () => {
     expect(await (await t.req('/i/inv-1')).text()).toContain('Paid. Thank you.')
     expect((await t.req('/i/nope')).status).toBe(404)
     expect(validHandle('invoices')).toBe('that one is taken')
+  })
+})
+
+describe('webhook settling', () => {
+  test('PayPal completed settles; other owners and old address payments', async () => {
+    const t = setup()
+    await signIn(t)
+    const csrf = await t.csrfFrom(await t.req('/start'))
+    await t.req('/start', { method: 'POST', form: { csrf, handle: 'dana', mode: 'wallet' } })
+    await t.req('/dana', { method: 'POST', form: { amount: '20', email: 'buyer@example.com' } })
+    const pid = t.cp.state.lastSessionBody.metadata.payagent_id
+    const secret = t.cp.state.businesses[0].webhook_secret
+    const post = (event: unknown) => {
+      const body = JSON.stringify(event)
+      return t.req('/hooks/coinpay', { method: 'POST', body, headers: { 'x-coinpay-signature': signWebhook(body, secret) } })
+    }
+    // Unknown business: no secret to check against.
+    expect((await post({ id: 'evt_x', type: 'payment.confirmed', business_id: 'nope', data: { checkout_session_id: 'cs_test1', status: 'confirmed' } })).status).toBe(401)
+    // A PayPal capture: confirmed with status completed, rail paypal.
+    const r = await post({ id: 'evt_pp', type: 'payment.confirmed', business_id: 'b1', data: { payment_id: 'pp_1', status: 'completed', rail: 'paypal', amount_usd: 20, checkout_session_id: 'cs_test1', metadata: { payagent_id: pid } } })
+    expect(r.status).toBe(200)
+    expect(t.store.payment(pid)).toMatchObject({ status: 'completed', coin: 'paypal', paymentId: 'pp_1' })
+    // A payment made before sessions still settles by its payment id.
+    t.store.addPayment({ id: 'pay_old', handle: 'dana', amountUsd: 1, coin: 'usdc_sol', amountCrypto: '1', address: 'So1', status: 'pending', note: '', payer: '', expiresAt: null })
+    expect((await post({ id: 'evt_o', type: 'payment.forwarded', business_id: 'b1', data: { payment_id: 'pay_old', status: 'forwarded' } })).status).toBe(200)
+    expect(t.store.payment('pay_old')!.status).toBe('forwarded')
+    // A row belonging to someone else is never touched by this owner's events.
+    t.store.addPayment({ id: 'pay_other', handle: 'someone', amountUsd: 1, coin: 'btc', amountCrypto: '1', address: 'x', status: 'pending', note: '', payer: '', expiresAt: null })
+    const other = await (await post({ id: 'evt_s', type: 'payment.confirmed', business_id: 'b1', data: { payment_id: 'pay_other', status: 'confirmed' } })).json()
+    expect(other).toMatchObject({ ok: true, matched: false })
+    expect(t.store.payment('pay_other')!.status).toBe('pending')
   })
 })

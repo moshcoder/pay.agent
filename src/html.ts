@@ -102,13 +102,13 @@ export function homePage(ctx: Ctx): string {
 <div class="grid3">
   <div class="card"><h2><span class="step-n">1</span>Sign in</h2><p class="muted">With your CoinPay account. We set up everything CoinPay needs for you.</p></div>
   <div class="card"><h2><span class="step-n">2</span>Pick a name</h2><p class="muted"><code>pay.agent/yourname</code>, and where the money goes: your wallet or your business.</p></div>
-  <div class="card"><h2><span class="step-n">3</span>Share it</h2><p class="muted">Paste it anywhere. Payers pick an amount and a coin, scan, done. You see it arrive.</p></div>
+  <div class="card"><h2><span class="step-n">3</span>Share it</h2><p class="muted">Paste it anywhere. Payers enter an amount and pay on CoinPay in any coin you take, or PayPal. You see it arrive.</p></div>
 </div>
 <div class="card" id="agents">
   <h2>Built for agents too</h2>
-  <p class="muted">Every pay link is an API. An agent asks for an address and an exact amount, pays, and checks it landed:</p>
+  <p class="muted">Every pay link is an API. An agent asks for a checkout, pays it on CoinPay, and checks it landed:</p>
   <pre>curl -X POST https://pay.agent/api/v1/users/alice/payments \\
-  -H 'content-type: application/json' -d '{"amount_usd": 5, "coin": "usdc_sol"}'</pre>
+  -H 'content-type: application/json' -d '{"amount_usd": 5, "payer_email": "me@example.com"}'</pre>
   <p class="muted small">Also a CLI (<code>bunx @profullstack/payagent</code>) and an MCP server (<code>bunx @profullstack/payagent mcp</code>). <a href="/help#agents">How</a></p>
 </div>`,
   })
@@ -132,15 +132,16 @@ export function helpPage(ctx: Ctx): string {
     <li><b>My CoinPay business</b>: payments go to a business you already run on CoinPay, using its payout wallets and keeping its settings.</li></ul></li>
   <li>No payout address yet? Paste one during setup (for example a Solana address for USDC on Solana). You can add more later in CoinPay and press <b>Re-check coins</b>.</li>
 </ol></div>
-<div class="card"><h2>Paying someone</h2><p>Open their link, enter an amount in dollars, pick a coin, and send exactly the amount shown to the address shown (scan the QR code with your wallet). The page turns green when CoinPay sees the payment. Each payment address is good for one hour.</p></div>
+<div class="card"><h2>Paying someone</h2><p>Open their link, enter an amount in dollars and your email (CoinPay sends the receipt there), and continue to CoinPay's checkout. Pick any coin they take, or PayPal when they connected it, and pay. CoinPay brings you back to pay.agent, and the page turns green when the payment lands. A checkout is open for one hour.</p></div>
 <div class="card"><h2>Fees</h2><p>pay.agent adds no fee. CoinPay takes its normal fee when it forwards the payment to you, and the payer pays their own network fee.</p></div>
 <div class="card"><h2>Coins</h2><p class="small">${coins}</p><p class="muted small">A link only offers coins its owner has a payout address for.</p></div>
 <div class="card" id="agents"><h2>Agents, API, CLI, MCP</h2>
 <p>Every link is an API, no key needed to pay someone:</p>
 <pre>GET  /api/v1/users/:handle                 who, and which coins
-POST /api/v1/users/:handle/payments        {"amount_usd": 5, "coin": "usdc_sol", "note": "thanks"}
-                                           -> {id, address, amount_crypto, coin, expires_at, checkout_url}
-GET  /api/v1/payments/:id                  status: pending, confirmed, forwarded, expired</pre>
+POST /api/v1/users/:handle/payments        {"amount_usd": 5, "payer_email": "me@example.com", "note": "thanks"}
+                                           -> {id, status, expires_at, checkout_url, status_url}
+                                           open checkout_url (CoinPay) to pay in any coin they take, or PayPal
+GET  /api/v1/payments/:id                  status: pending, confirmed, forwarded, completed (PayPal), expired</pre>
 <p>Your own payments, with the API key from <a href="/me">My link</a>:</p>
 <pre>GET  /api/v1/me                            -H 'authorization: Bearer pa_…'</pre>
 <p id="invoices">Invoices, sent through CoinPay as you (CoinPay emails the pay link; a repeat sends the next ones):</p>
@@ -148,7 +149,7 @@ GET  /api/v1/payments/:id                  status: pending, confirmed, forwarded
                                             "due_date": "2026-11-30", "recurrence": "monthly", "email": true}
 GET  /api/v1/invoices                      yours, with the key
 GET  /api/v1/invoices/:id                  public: status (sent, paid, overdue), address, exact amount</pre>
-<pre>bunx @profullstack/payagent alice 5 usdc_sol              pay alice $5 in USDC on Solana
+<pre>bunx @profullstack/payagent alice 5 --email=me@example.com  pay alice $5: prints the CoinPay checkout link
 bunx @profullstack/payagent status &lt;payment-id&gt;
 bunx @profullstack/payagent invoice pat@example.com 49 Logo --repeat=monthly
 bunx @profullstack/payagent                               the TUI
@@ -251,8 +252,8 @@ ${o.coinsNote ? `<p class="note" role="status">${esc(o.coinsNote)}</p>` : ''}</d
 ${invoices.length ? `<table><thead><tr><th>No.</th><th>To</th><th>Amount</th><th>For</th><th>Status</th></tr></thead><tbody>${invoices
       .map((i) => `<tr><td>${esc(i.number)}</td><td>${esc(i.toName || i.toEmail)}</td><td>${usd(i.amountUsd)}${i.recurrence ? ` <span class="muted small">${esc(i.recurrence)}</span>` : ''}</td><td>${esc(i.description.slice(0, 60))}</td><td><a class="status ${esc(i.status)}" href="/i/${esc(i.id)}">${esc(i.status)}</a></td></tr>`)
       .join('')}</tbody></table>` : ''}</div>
-<div class="card"><h2>Payments</h2>${o.payments.length ? `<table><thead><tr><th>When</th><th>Amount</th><th>Coin</th><th>Note</th><th>Status</th></tr></thead><tbody>${o.payments
-      .map((p) => `<tr><td>${esc(new Date(p.createdAt).toISOString().slice(0, 16).replace('T', ' '))}</td><td>${usd(p.amountUsd)}</td><td>${esc(p.coin.toUpperCase())}</td><td>${esc(p.note)}</td><td><a class="status ${esc(p.status)}" href="/p/${esc(p.id)}">${esc(p.status)}</a></td></tr>`)
+<div class="card"><h2>Payments</h2>${o.payments.length ? `<table><thead><tr><th>When</th><th>Amount</th><th>Paid with</th><th>Note</th><th>Status</th></tr></thead><tbody>${o.payments
+      .map((p) => `<tr><td>${esc(new Date(p.createdAt).toISOString().slice(0, 16).replace('T', ' '))}</td><td>${usd(p.amountUsd)}</td><td>${esc(p.coin ? coinName(p.coin) : '-')}</td><td>${esc(p.note)}</td><td><a class="status ${esc(p.status)}" href="/p/${esc(p.id)}">${esc(p.status)}</a></td></tr>`)
       .join('')}</tbody></table>` : '<p class="muted">None yet.</p>'}</div>
 <div class="card"><h2>API key</h2>${o.apiKey ? `<p>Your key, shown once:</p><div class="address"><code>${esc(o.apiKey)}</code><button class="copy" type="button" data-copy="${esc(o.apiKey)}">Copy</button></div>` : `<p class="muted small">For <code>GET /api/v1/me</code>, the CLI and MCP. ${u.apiKeyHash ? 'You have one; making a new one replaces it.' : ''}</p>`}
 <form method="post" action="/me/key"><input type="hidden" name="csrf" value="${esc(ctx.csrf)}"><button class="copy">${u.apiKeyHash ? 'Replace my key' : 'Make a key'}</button></form></div>
@@ -263,29 +264,29 @@ ${invoices.length ? `<table><thead><tr><th>No.</th><th>To</th><th>Amount</th><th
   })
 }
 
-export function payPage(ctx: Ctx, o: { payee: User; amount?: string; note?: string; coin?: string; error?: string }): string {
+export function payPage(ctx: Ctx, o: { payee: User; amount?: string; note?: string; email?: string; payer?: string; error?: string }): string {
   const p = o.payee
   const initial = (p.name || p.handle || '?').trim().charAt(0).toUpperCase()
-  const can = p.coins.length > 0
   return layout({
     ctx,
     title: `Pay ${p.name || p.handle} · pay.agent`,
-    description: `Pay ${p.name || p.handle} in crypto: ${p.coins.map(coinName).join(', ') || 'set up in progress'}.`,
+    description: `Pay ${p.name || p.handle} in crypto${p.coins.length ? `: ${p.coins.map(coinName).join(', ')}` : ''}, through CoinPay.`,
     path: `/${p.handle}`,
     body: `<section class="payee"><div class="avatar" aria-hidden="true">${esc(initial)}</div><h1>${esc(p.name || p.handle)}</h1><p class="muted">pay.agent/${esc(p.handle)}</p></section>
 ${o.error ? `<p class="note error">${esc(o.error)}</p>` : ''}
-${can ? `<form method="post" action="/${esc(p.handle)}" class="card">
+<form method="post" action="/${esc(p.handle)}" class="card">
   <label for="amount" class="center">Amount in USD</label>
   <input id="amount" class="amount-input" name="amount" required inputmode="decimal" placeholder="0" value="${esc(o.amount ?? '')}" autofocus>
-  <label for="coin">Pay with</label>
-  <select id="coin" name="coin">${p.coins.map((c) => `<option value="${esc(c)}" ${o.coin === c ? 'selected' : ''}>${esc(coinName(c))}</option>`).join('')}</select>
+  <label for="email">Your email <span class="muted">(for the receipt)</span></label>
+  <input id="email" name="email" type="email" required maxlength="254" autocomplete="email" value="${esc(o.email ?? '')}">
   <label for="note">What for <span class="muted">(optional)</span></label>
   <input id="note" name="note" maxlength="140" value="${esc(o.note ?? '')}">
   <label for="payer">Your name <span class="muted">(optional)</span></label>
-  <input id="payer" name="payer" maxlength="60">
+  <input id="payer" name="payer" maxlength="60" value="${esc(o.payer ?? '')}">
   <input class="hp" name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true">
-  <p style="margin-top:1.2rem"><button class="btn wide big">Pay</button></p>
-</form>` : `<p class="note">${esc(p.handle)} cannot take payments yet.</p>`}
+  <p style="margin-top:1.2rem"><button class="btn wide big">Continue to pay</button></p>
+  <p class="muted small center">You pick the coin (or PayPal, when ${esc(p.name || p.handle)} takes it) on CoinPay's secure checkout.</p>
+</form>
 <p class="center muted small">Want your own? <a href="/">Get a pay link</a></p>`,
   })
 }
@@ -293,26 +294,37 @@ ${can ? `<form method="post" action="/${esc(p.handle)}" class="card">
 export function checkoutPage(ctx: Ctx, o: { payment: PaymentRow; payee: User | null; qr: string }): string {
   const p = o.payment
   const paid = PAID.has(p.status)
-  return layout({
-    ctx,
-    noindex: true,
-    script: true,
-    title: `Pay ${usd(p.amountUsd)} to ${p.handle} · pay.agent`,
-    description: 'Send the exact amount to the address shown.',
-    path: `/p/${p.id}`,
-    body: `<section class="payee" style="padding-top:2rem"><p class="muted" style="margin:0">Paying ${esc(o.payee?.name || p.handle)} · pay.agent/${esc(p.handle)}</p>
-<p class="amount">${usd(p.amountUsd)}</p>${p.note ? `<p class="muted">${esc(p.note)}</p>` : ''}
-<p><span class="status ${esc(p.status)}" id="status" data-payment="${esc(p.id)}">${paid ? 'paid' : esc(p.status)}</span></p></section>
-<div class="card" id="pay-box" ${paid ? 'hidden' : ''}>
-  <p class="center">Send exactly</p>
+  const over = !paid && (p.status === 'expired' || p.status === 'failed')
+  const who = o.payee?.name || p.handle
+  // Payments made before checkout sessions: an address and an exact amount.
+  const legacy = Boolean(p.address)
+  const payBox = legacy
+    ? `<p class="center">Send exactly</p>
   <p class="amount" style="font-size:1.6rem">${esc(p.amountCrypto)} <span class="muted">${esc(coinName(p.coin))}</span></p>
   <div class="address"><code>${esc(p.amountCrypto)}</code><button class="copy" type="button" data-copy="${esc(p.amountCrypto)}">Copy amount</button></div>
   ${o.qr}
   <p class="center muted small">to this address</p>
   <div class="address"><code>${esc(p.address)}</code><button class="copy" type="button" data-copy="${esc(p.address)}">Copy</button></div>
-  <p class="muted small center">${p.expiresAt ? `Good until ${esc(new Date(p.expiresAt).toUTCString().replace(' GMT', ' UTC'))}. ` : ''}Send it in one payment, on the right network, from a wallet you control. This page updates by itself.</p>
+  <p class="muted small center">${p.expiresAt ? `Good until ${esc(new Date(p.expiresAt).toUTCString().replace(' GMT', ' UTC'))}. ` : ''}Send it in one payment, on the right network, from a wallet you control. This page updates by itself.</p>`
+    : over
+      ? `<p class="center">This checkout has expired. <a href="/${esc(p.handle)}">Start again</a>.</p>`
+      : `<p class="center">Not paid yet. If you have not finished, pick up where you left off on CoinPay.</p>
+  <p class="center"><a class="btn big" href="${esc(p.checkoutUrl)}">Continue to pay</a></p>
+  <p class="muted small center">${p.expiresAt ? `Open until ${esc(new Date(p.expiresAt).toUTCString().replace(' GMT', ' UTC'))}. ` : ''}Already sent it? This page updates by itself once CoinPay sees it.</p>`
+  return layout({
+    ctx,
+    noindex: true,
+    script: true,
+    title: `Pay ${usd(p.amountUsd)} to ${p.handle} · pay.agent`,
+    description: legacy ? 'Send the exact amount to the address shown.' : `Your payment to ${who} through CoinPay.`,
+    path: `/p/${p.id}`,
+    body: `<section class="payee" style="padding-top:2rem"><p class="muted" style="margin:0">Paying ${esc(who)} · pay.agent/${esc(p.handle)}</p>
+<p class="amount">${usd(p.amountUsd)}</p>${p.note ? `<p class="muted">${esc(p.note)}</p>` : ''}
+<p><span class="status ${esc(p.status)}" id="status" data-payment="${esc(p.id)}">${paid ? 'paid' : esc(p.status)}</span></p></section>
+<div class="card" id="pay-box" ${paid ? 'hidden' : ''}>
+  ${payBox}
 </div>
-<div class="card center" id="paid-box" ${paid ? '' : 'hidden'}><h2 class="ok">Paid. Thank you.</h2><p class="muted">CoinPay has the payment and forwards it to ${esc(o.payee?.name || p.handle)}.</p></div>
+<div class="card center" id="paid-box" ${paid ? '' : 'hidden'}><h2 class="ok">Paid. Thank you.</h2><p class="muted">CoinPay has the payment and forwards it to ${esc(who)}.${p.payerEmail ? ' Your receipt goes to your email.' : ''}</p></div>
 <p class="center muted small"><a href="/${esc(p.handle)}">Back</a> · Payment ${esc(p.id)}</p>`,
   })
 }

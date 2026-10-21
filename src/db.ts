@@ -34,6 +34,14 @@ export type PaymentRow = {
   status: string
   note: string
   payer: string
+  /** The payer's email: CoinPay's checkout session needs one (and sends the receipt there). */
+  payerEmail: string
+  /** The CoinPay hosted checkout session (cs_...) this payment was made through; '' for older address payments. */
+  sessionId: string
+  /** Where the payer pays: the session's page on CoinPay. */
+  checkoutUrl: string
+  /** The CoinPay payment that settled the session, once one did. */
+  paymentId: string
   expiresAt: string | null
   createdAt: number
   updatedAt: number
@@ -150,6 +158,12 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS invoices_handle ON invoices(handle, created_at DESC);
     `)
+    // Hosted checkout sessions (0.3.0): added to databases made before them.
+    const cols = new Set((this.db.query('PRAGMA table_info(payments)').all() as { name: string }[]).map((c) => c.name))
+    for (const col of ['payer_email', 'session_id', 'checkout_url', 'payment_id']) {
+      if (!cols.has(col)) this.db.exec(`ALTER TABLE payments ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`)
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS payments_session ON payments(session_id) WHERE session_id != ''")
   }
 
   private toUser(row: any): User | null {
@@ -267,16 +281,32 @@ export class Store {
       status: row.status,
       note: row.note,
       payer: row.payer,
+      payerEmail: row.payer_email ?? '',
+      sessionId: row.session_id ?? '',
+      checkoutUrl: row.checkout_url ?? '',
+      paymentId: row.payment_id ?? '',
       expiresAt: row.expires_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }
   }
 
-  addPayment(p: Omit<PaymentRow, 'createdAt' | 'updatedAt'>, now = Date.now()): void {
+  addPayment(p: Omit<PaymentRow, 'createdAt' | 'updatedAt' | 'payerEmail' | 'sessionId' | 'checkoutUrl' | 'paymentId'> & Partial<Pick<PaymentRow, 'payerEmail' | 'sessionId' | 'checkoutUrl' | 'paymentId'>>, now = Date.now()): void {
     this.db
-      .query('INSERT OR IGNORE INTO payments (id, handle, amount_usd, coin, amount_crypto, address, status, note, payer, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(p.id, p.handle, p.amountUsd, p.coin, p.amountCrypto, p.address, p.status, p.note, p.payer, p.expiresAt, now, now)
+      .query('INSERT OR IGNORE INTO payments (id, handle, amount_usd, coin, amount_crypto, address, status, note, payer, payer_email, session_id, checkout_url, payment_id, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(p.id, p.handle, p.amountUsd, p.coin, p.amountCrypto, p.address, p.status, p.note, p.payer, p.payerEmail ?? '', p.sessionId ?? '', p.checkoutUrl ?? '', p.paymentId ?? '', p.expiresAt, now, now)
+  }
+
+  bySession(sessionId: string): PaymentRow | null {
+    if (!sessionId) return null
+    return this.toPayment(this.db.query("SELECT * FROM payments WHERE session_id = ? AND session_id != ''").get(sessionId))
+  }
+
+  /** What a settled session tells us: the status, and which CoinPay payment and method paid it. */
+  settle(id: string, s: { status: string; paymentId?: string; coin?: string }, now = Date.now()): void {
+    this.db
+      .query("UPDATE payments SET status = ?, payment_id = COALESCE(NULLIF(?, ''), payment_id), coin = COALESCE(NULLIF(?, ''), coin), updated_at = ? WHERE id = ?")
+      .run(s.status, s.paymentId ?? '', s.coin ?? '', now, id)
   }
 
   payment(id: string): PaymentRow | null {

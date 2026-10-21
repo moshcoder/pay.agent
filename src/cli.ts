@@ -2,7 +2,7 @@
  * payagent: pay.agent from the terminal.
  *
  *   payagent                          the TUI
- *   payagent <handle> <usd> [coin]    pay someone: prints the address and exact amount
+ *   payagent <handle> <usd> [note…] --email=you@x   pay someone: prints the CoinPay checkout link
  *   payagent who <handle>             who they are and which coins they take
  *   payagent status <payment-id> [--wait]
  *   payagent me                       your link and payments (PAYAGENT_KEY)
@@ -17,7 +17,9 @@ import { VERSION } from './version.js'
 export const HELP = `payagent ${VERSION}: get paid, and pay, in crypto (https://pay.agent)
 
   payagent                          interactive (TUI)
-  payagent <handle> <usd> [coin]    pay someone: address + exact amount (coin e.g. usdc_sol)
+  payagent <handle> <usd> [note…] --email=you@example.com
+                                    pay someone: a CoinPay checkout link (any coin they take, or PayPal);
+                                    the email gets the receipt (or set PAYAGENT_EMAIL)
   payagent who <handle>             their name and the coins they take
   payagent status <id> [--wait]     a payment's status; --wait until it settles
   payagent me                       your link and payments (PAYAGENT_KEY=pa_…)
@@ -112,14 +114,19 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
         return PAID.includes(p.status) || !wait ? 0 : 1
       }
     }
-    // payagent <handle> <usd> [coin] [note…]
-    const [handle, usd, coin, ...note] = args
+    // payagent <handle> <usd> [note…] --email=you@example.com
+    const [handle, usd, ...note] = args
     if (!usd || !Number.isFinite(Number(usd))) {
       out.error(`payagent: unknown command "${command}"\n\n${HELP}`)
       return 2
     }
-    const p = await client.pay(handle!, Number(usd), coin, note.join(' ') || undefined)
-    show(p, `Send exactly ${p.amount_crypto} ${p.coin.toUpperCase()} to\n${p.address}\n\nGood until ${p.expires_at ?? 'an hour from now'}. Watch it: payagent status ${p.id} --wait\n${p.checkout_url}`)
+    const email = flag('email') ?? process.env.PAYAGENT_EMAIL ?? ''
+    if (!email) {
+      out.error('payagent: your email is needed for the receipt: --email=you@example.com (or PAYAGENT_EMAIL)')
+      return 2
+    }
+    const p = await client.pay(handle!, Number(usd), email, note.join(' ') || undefined)
+    show(p, `Pay $${p.amount_usd} to ${p.handle} on CoinPay (any coin they take, or PayPal):\n${p.checkout_url}\n\nOpen until ${p.expires_at ?? 'an hour from now'}. Watch it: payagent status ${p.id} --wait`)
     return 0
   } catch (error) {
     out.error(error instanceof Error ? error.message : String(error))

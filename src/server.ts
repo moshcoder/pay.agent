@@ -11,7 +11,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { Hono, type Context } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import QRCode from 'qrcode'
-import { verifyWebhook, eventPaymentId, type WebhookEvent } from '@profullstack/coinpay-onboard'
+import { verifyWebhook } from '@profullstack/coinpay-onboard'
 import { authorizeUrl, exchangeCode, pkce } from '@profullstack/coinpay-onboard/oauth'
 import { CoinPay } from '@profullstack/coinpay-onboard'
 import { Sealer, Store, type User } from './db.js'
@@ -30,7 +30,7 @@ const RELAY_ORIGIN = 'https://pay.agent.pit.world'
 const SESSION = 'pa_session'
 
 const SECURITY_HEADERS: Record<string, string> = {
-  'content-security-policy': "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' https://crawlproof.com; img-src 'self' data:; connect-src 'self' https://crawlproof.com; frame-src https://crawlproof.com; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+  'content-security-policy': "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' https://crawlproof.com; img-src 'self' data:; connect-src 'self' https://crawlproof.com; frame-src https://crawlproof.com; form-action 'self' https://coinpayportal.com; base-uri 'none'; frame-ancestors 'none'",
   'referrer-policy': 'strict-origin-when-cross-origin',
   'x-content-type-options': 'nosniff',
   'permissions-policy': 'interest-cohort=(), browsing-topics=(), camera=(), microphone=(), geolocation=()',
@@ -239,21 +239,21 @@ export function createApp(deps: Deps) {
     }
   })
 
-  // CoinPay's events, for the businesses pay.agent made (wallet mode).
+  // CoinPay's events, for the businesses pay.agent made (wallet mode). Raw
+  // bytes are verified with that owner's secret, then the checkout session the
+  // event names is settled (see PayAgent.settleEvent).
   app.post('/hooks/coinpay', async (c) => {
     const raw = await c.req.text()
-    let event: WebhookEvent
+    let event: { business_id?: unknown }
     try {
       event = JSON.parse(raw)
     } catch {
       return c.json({ error: 'not JSON' }, 400)
     }
-    const owner = event.business_id ? store.byBusiness(String(event.business_id)) : null
+    const owner = event && typeof event === 'object' && event.business_id ? store.byBusiness(String(event.business_id)) : null
     if (!owner?.webhookSecret || !verifyWebhook(raw, c.req.header('x-coinpay-signature'), owner.webhookSecret)) return c.json({ error: 'bad signature' }, 401)
-    const id = eventPaymentId(event)
-    const status = String(event.data?.status ?? event.type?.replace(/^payment\./, '') ?? '')
-    if (id && status && store.payment(id)) store.setStatus(id, status)
-    return c.json({ ok: true })
+    const r = agent.settleEvent(owner, event)
+    return c.json({ ok: true, matched: r.matched })
   })
 
   // The API: anyone may pay anyone; an owner reads their own with a key.
@@ -262,12 +262,15 @@ export function createApp(deps: Deps) {
     id: p.id,
     handle: p.handle,
     amount_usd: p.amountUsd,
-    coin: p.coin,
-    amount_crypto: p.amountCrypto,
-    address: p.address,
     status: p.status,
     expires_at: p.expiresAt,
-    checkout_url: `${o}/p/${p.id}`,
+    // Where the payer pays: CoinPay's hosted page (any coin the payee takes, or PayPal).
+    checkout_url: p.checkoutUrl || `${o}/p/${p.id}`,
+    status_url: `${o}/p/${p.id}`,
+    ...(p.sessionId ? { session_id: p.sessionId } : {}),
+    // Set once paid (the coin or paypal), or from the start on payments made before sessions.
+    coin: p.coin || null,
+    ...(p.address ? { amount_crypto: p.amountCrypto, address: p.address } : {}),
   })
 
   app.get('/api/v1/users/:handle', (c) => {
@@ -279,7 +282,8 @@ export function createApp(deps: Deps) {
     if (!payLimit.allow(`pay:${ip(c)}`)) return c.json({ error: 'too many payments from you; wait a few minutes' }, 429)
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>
     try {
-      const p = await agent.pay(c.req.param('handle'), { amountUsd: Number(body.amount_usd), ...(typeof body.coin === 'string' ? { coin: body.coin } : {}), ...(typeof body.note === 'string' ? { note: body.note } : {}), ...(typeof body.payer === 'string' ? { payer: body.payer } : {}) })
+      const email = typeof body.payer_email === 'string' ? body.payer_email : typeof body.email === 'string' ? body.email : ''
+      const p = await agent.pay(c.req.param('handle'), { amountUsd: Number(body.amount_usd), email, origin: origin(c), ...(typeof body.note === 'string' ? { note: body.note } : {}), ...(typeof body.payer === 'string' ? { payer: body.payer } : {}) })
       return c.json(publicPayment(p, origin(c)), 201)
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, e instanceof SetupError ? 400 : 502)
@@ -354,14 +358,14 @@ export function createApp(deps: Deps) {
   app.get('/p/:id', async (c) => {
     const p = await agent.follow(c.req.param('id'))
     if (!p) return page(c, messagePage(ctxOf(c), { title: 'No such payment', message: 'That payment does not exist.' }), 404)
-    return page(c, checkoutPage(ctxOf(c), { payment: p, payee: store.byHandle(p.handle), qr: await qrSvg(p.address) }))
+    return page(c, checkoutPage(ctxOf(c), { payment: p, payee: store.byHandle(p.handle), qr: p.address ? await qrSvg(p.address) : '' }))
   })
 
   // A pay link.
   app.get('/:handle', (c) => {
     const payee = store.byHandle(c.req.param('handle'))
     if (!payee?.handle) return page(c, messagePage(ctxOf(c), { title: 'No such pay link', message: 'Nobody has that name yet. It could be yours.' }), 404)
-    return page(c, payPage(ctxOf(c), { payee, amount: c.req.query('amount'), note: c.req.query('note'), coin: c.req.query('coin') }))
+    return page(c, payPage(ctxOf(c), { payee, amount: c.req.query('amount'), note: c.req.query('note') }))
   })
 
   app.post('/:handle', async (c) => {
@@ -370,12 +374,14 @@ export function createApp(deps: Deps) {
     const form = (await c.req.parseBody()) as Record<string, string>
     // Honeypot: people never see the website field, so a filled one is a bot. Back to the link, no payment made.
     if (typeof form.website === 'string' && form.website !== '') return c.redirect(`/${payee.handle}`, 303)
-    if (!payLimit.allow(`pay:${ip(c)}`)) return page(c, payPage(ctxOf(c), { payee, ...form, error: 'Too many payments from you. Wait a few minutes.' }), 429)
+    const again = { payee, amount: form.amount, note: form.note, email: form.email, payer: form.payer }
+    if (!payLimit.allow(`pay:${ip(c)}`)) return page(c, payPage(ctxOf(c), { ...again, error: 'Too many payments from you. Wait a few minutes.' }), 429)
     try {
-      const p = await agent.pay(payee.handle, { amountUsd: Number(String(form.amount ?? '').replace(/[$,\s]/g, '')), coin: form.coin, note: form.note, payer: form.payer })
-      return c.redirect(`/p/${p.id}`)
+      const p = await agent.pay(payee.handle, { amountUsd: Number(String(form.amount ?? '').replace(/[$,\s]/g, '')), email: form.email ?? '', note: form.note, payer: form.payer, origin: origin(c) })
+      // Straight to CoinPay's hosted checkout; it sends the payer back to /p/<id>.
+      return c.redirect(p.checkoutUrl || `/p/${p.id}`, 303)
     } catch (e) {
-      return page(c, payPage(ctxOf(c), { payee, amount: form.amount, note: form.note, coin: form.coin, error: e instanceof Error ? e.message : String(e) }), e instanceof SetupError ? 400 : 502)
+      return page(c, payPage(ctxOf(c), { ...again, error: e instanceof Error ? e.message : String(e) }), e instanceof SetupError ? 400 : 502)
     }
   })
 
