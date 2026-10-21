@@ -3,8 +3,8 @@
  *
  *   claude mcp add payagent -- bunx @profullstack/payagent mcp
  *
- * Paying needs no key: ask for a payment, send the exact amount to the address,
- * then check it. PAYAGENT_KEY (pa_…) adds `my_payments`, `send_invoice` and `my_invoices`.
+ * Paying needs no key: ask for a payment, pay it at the CoinPay checkout URL it
+ * returns, then check it. PAYAGENT_KEY (pa_…) adds `my_payments`, `send_invoice` and `my_invoices`.
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -23,13 +23,13 @@ export function createMcpServer(client = new PayAgentClient()): McpServer {
   })
   server.tool(
     'request_payment',
-    'Start paying a pay.agent handle: returns the address and the EXACT crypto amount to send, valid for an hour. Send it from a wallet you control, then call payment_status.',
-    { handle, amount_usd: z.number().min(0.5).max(10000), coin: z.string().optional().describe('e.g. usdc_sol, usdc_base, btc, eth; default: their first'), note: z.string().max(140).optional() },
-    async ({ handle, amount_usd, coin, note }: { handle: string; amount_usd: number; coin?: string; note?: string }) => {
-      try { return text(await client.pay(handle, amount_usd, coin, note)) } catch (e) { return failure(e) }
+    'Start paying a pay.agent handle: returns checkout_url, a CoinPay hosted checkout open for an hour where the payer picks any coin the payee takes (or PayPal) and gets the exact amount and address. Pay it there, then call payment_status.',
+    { handle, amount_usd: z.number().min(0.5).max(10000), payer_email: z.string().email().describe('The payer\'s email: CoinPay sends the receipt there'), note: z.string().max(140).optional() },
+    async ({ handle, amount_usd, payer_email, note }: { handle: string; amount_usd: number; payer_email: string; note?: string }) => {
+      try { return text(await client.pay(handle, amount_usd, payer_email, note)) } catch (e) { return failure(e) }
     },
   )
-  server.tool('payment_status', 'A payment\'s status: pending, detected, confirmed, forwarded (paid), expired or failed.', { payment_id: z.string().min(1) }, async ({ payment_id }: { payment_id: string }) => {
+  server.tool('payment_status', 'A payment\'s status: pending, confirmed, forwarded or completed (paid), expired or failed.', { payment_id: z.string().min(1) }, async ({ payment_id }: { payment_id: string }) => {
     try { return text(await client.payment(payment_id)) } catch (e) { return failure(e) }
   })
   server.tool('my_payments', 'Your own pay.agent link and the payments made to it (needs PAYAGENT_KEY).', {}, async () => {

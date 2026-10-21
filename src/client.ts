@@ -2,7 +2,8 @@
  * The pay.agent API from anywhere: the CLI, the TUI and the MCP server use this.
  * PAYAGENT_URL points it at another instance; PAYAGENT_KEY (pa_…) reads your own.
  */
-export type ApiPayment = { id: string; handle: string; amount_usd: number; coin: string; amount_crypto: string; address: string; status: string; expires_at: string | null; checkout_url: string }
+/** A payment: open checkout_url (CoinPay's hosted checkout) to pay it in any coin the payee takes, or PayPal. */
+export type ApiPayment = { id: string; handle: string; amount_usd: number; status: string; expires_at: string | null; checkout_url: string; status_url: string; session_id?: string; coin: string | null; amount_crypto?: string; address?: string }
 export type ApiInvoice = {
   id: string
   number: string
@@ -52,8 +53,9 @@ export class PayAgentClient {
     return this.call('GET', `/api/v1/users/${encodeURIComponent(handle.replace(/^@/, ''))}`)
   }
 
-  pay(handle: string, amountUsd: number, coin?: string, note?: string): Promise<ApiPayment> {
-    return this.call('POST', `/api/v1/users/${encodeURIComponent(handle.replace(/^@/, ''))}/payments`, { amount_usd: amountUsd, ...(coin ? { coin } : {}), ...(note ? { note } : {}) })
+  /** Start paying `handle`: a CoinPay checkout for the amount. `email` gets the receipt (required). */
+  pay(handle: string, amountUsd: number, email: string, note?: string): Promise<ApiPayment> {
+    return this.call('POST', `/api/v1/users/${encodeURIComponent(handle.replace(/^@/, ''))}/payments`, { amount_usd: amountUsd, payer_email: email, ...(note ? { note } : {}) })
   }
 
   payment(id: string): Promise<ApiPayment> {

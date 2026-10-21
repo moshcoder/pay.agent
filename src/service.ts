@@ -3,7 +3,7 @@
  * onboard them, and make and follow payments.
  */
 import { randomBytes } from 'node:crypto'
-import { COINS, CoinPay, onboard, payableBy, payableCoins, walletCode, type OnboardStep, type Payment } from '@profullstack/coinpay-onboard'
+import { COINS, CoinPay, onboard, payableBy, payableCoins, readWebhook, walletCode, type CheckoutSession, type OnboardStep } from '@profullstack/coinpay-onboard'
 import { refresh as refreshTokens } from '@profullstack/coinpay-onboard/oauth'
 import { validHandle, type InvoiceRow, type Mode, type PaymentRow, type Store, type User } from './db.js'
 
@@ -26,6 +26,7 @@ const MIN_USD = 0.5
 const MAX_USD = 10_000
 
 export function coinName(id: string): string {
+  if (id.toLowerCase() === 'paypal') return 'PayPal'
   return COINS.find((c) => c.id === id)?.name ?? id.toUpperCase()
 }
 
@@ -142,41 +143,84 @@ export class PayAgent {
     return coins
   }
 
-  /** A payment to `handle`: CoinPay makes an address and an exact amount; we keep a row to show and follow. */
-  async pay(handle: string, input: { amountUsd: number; coin?: string; note?: string; payer?: string }): Promise<PaymentRow> {
+  /**
+   * A payment to `handle`: a CoinPay hosted checkout session on the payee's own
+   * business, made as the payee over OAuth. The payer picks any coin the payee
+   * can receive (or PayPal, when the payee connected it) on CoinPay's page and
+   * comes back to /p/<id>. We keep a row to show and follow.
+   */
+  async pay(handle: string, input: { amountUsd: number; email: string; note?: string; payer?: string; origin: string }): Promise<PaymentRow> {
     const payee = this.store.byHandle(handle)
     if (!payee?.businessId || !payee.handle) throw new SetupError('No one has that pay link.')
     const amount = Math.round(Number(input.amountUsd) * 100) / 100
     if (!Number.isFinite(amount) || amount < MIN_USD || amount > MAX_USD) throw new SetupError(`Amount must be between $${MIN_USD} and $${MAX_USD.toLocaleString('en-US')}.`, 'amount')
-    const coin = input.coin && payee.coins.includes(input.coin) ? input.coin : payee.coins[0]
-    if (!coin) throw new SetupError(`${payee.handle} cannot take payments yet: no payout wallet on their CoinPay account.`)
+    const email = clean(input.email, 254).toLowerCase()
+    if (!EMAIL.test(email)) throw new SetupError('Your email, for the receipt.', 'email')
     if (this.store.pendingCount(payee.handle, Date.now() - 10 * 60_000) > 50) throw new SetupError('Too many unpaid payments to this link right now. Try again in a few minutes.')
-    const note = String(input.note ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 140)
-    const payer = String(input.payer ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 60)
+    const note = clean(input.note, 140)
+    const payer = clean(input.payer, 60)
+    const id = `pl_${randomBytes(12).toString('hex')}`
+    const origin = input.origin.replace(/\/+$/, '')
     const client = await this.clientFor(payee.sub)
-    const payment: Payment = await client.createPayment({
+    const session: CheckoutSession = await client.createCheckoutSession({
       businessId: payee.businessId,
-      amountUsd: amount,
-      currency: coin,
+      amount,
+      currency: 'USD',
       description: note ? `pay.agent/${payee.handle}: ${note}` : `pay.agent/${payee.handle}`,
-      metadata: { via: 'pay.agent', handle: payee.handle, ...(note ? { note } : {}), ...(payer ? { payer } : {}) },
+      customerEmail: email,
+      accountId: email,
+      property: PROPERTY,
+      metadata: { via: 'pay.agent', handle: payee.handle, payagent_id: id, ...(note ? { note } : {}), ...(payer ? { payer } : {}) },
+      successUrl: `${origin}/p/${id}?session={CHECKOUT_SESSION_ID}`,
+      cancelUrl: `${origin}/${payee.handle}`,
       expiresInMinutes: 60,
       idempotencyKey: randomBytes(16).toString('hex'),
     })
-    const row = {
-      id: payment.id,
+    this.store.addPayment({
+      id,
       handle: payee.handle,
       amountUsd: amount,
-      coin,
-      amountCrypto: payment.amountCrypto,
-      address: payment.address,
-      status: payment.status,
+      coin: '',
+      amountCrypto: '',
+      address: '',
+      status: 'pending',
       note,
       payer,
-      expiresAt: payment.expiresAt,
+      payerEmail: email,
+      sessionId: session.id,
+      checkoutUrl: session.url,
+      expiresAt: session.expiresAt,
+    })
+    return this.store.payment(id)!
+  }
+
+  /**
+   * A CoinPay event for `owner`'s business, already verified. Settles the row
+   * its checkout session made (or, for payments made before sessions, the row
+   * of that payment). Idempotent: confirmed then forwarded both land; a paid
+   * row never goes back; events for other owners' rows are ignored.
+   */
+  settleEvent(owner: { handle: string | null }, payload: unknown): { matched: boolean; paid: boolean } {
+    const w = readWebhook(payload)
+    const localId = typeof w.metadata?.payagent_id === 'string' ? w.metadata.payagent_id : ''
+    const row = this.store.bySession(w.checkoutSessionId ?? '') ?? (localId ? this.store.payment(localId) : null) ?? (w.paymentId ? this.store.payment(w.paymentId) : null)
+    if (!row || row.handle !== owner.handle) return { matched: false, paid: false }
+    const fromSession = Boolean(row.sessionId)
+    if (w.paid) {
+      const status = w.type === 'payment.forwarded' || w.status === 'forwarded' ? 'forwarded' : w.status === 'completed' ? 'completed' : 'confirmed'
+      // Forwarded is the last word; a late confirmed does not undo it.
+      const next = row.status === 'forwarded' ? 'forwarded' : status
+      this.store.settle(row.id, { status: next, paymentId: w.paymentId, coin: w.method ? w.method.toLowerCase() : '' })
+      return { matched: true, paid: true }
     }
-    this.store.addPayment(row)
-    return this.store.payment(payment.id)!
+    if (PAID.has(row.status)) return { matched: true, paid: true }
+    // One session can see a payment expire (the payer switched coins) and still
+    // be paid; the session itself says when it is over, so we ask it in follow().
+    if (!fromSession) {
+      const status = w.status || w.type.replace(/^payment\./, '')
+      if (status) this.store.setStatus(row.id, status)
+    }
+    return { matched: true, paid: false }
   }
 
   /**
@@ -187,7 +231,7 @@ export class PayAgent {
   async sendInvoice(user: User, input: InvoiceInput): Promise<{ invoice: InvoiceRow; warning?: string }> {
     if (!user.businessId || !user.handle) throw new SetupError('Set up your pay link first.')
     const toEmail = clean(input.toEmail, 254).toLowerCase()
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(toEmail)) throw new SetupError('Who is it for? An email address.', 'to_email')
+    if (!EMAIL.test(toEmail)) throw new SetupError('Who is it for? An email address.', 'to_email')
     const description = clean(input.description, 500)
     if (!description) throw new SetupError('Say what it is for.', 'description')
     const amount = Math.round(Number(input.amountUsd) * 100) / 100
@@ -261,9 +305,17 @@ export class PayAgent {
     const row = this.store.payment(id)
     if (!row) return null
     if (FINAL.has(row.status)) return row
+    const coinpay = new CoinPay({ base: this.config.coinpayBase, ...(this.config.fetch ? { fetch: this.config.fetch } : {}) })
     try {
-      const fresh = await new CoinPay({ base: this.config.coinpayBase, ...(this.config.fetch ? { fetch: this.config.fetch } : {}) }).payment(id)
-      if (fresh.status && fresh.status !== row.status) this.store.setStatus(id, fresh.status)
+      if (row.sessionId) {
+        // The session's public view: open, paid or expired.
+        const s = await coinpay.checkoutSession(row.sessionId)
+        if (s.status === 'paid') this.store.settle(id, { status: 'confirmed', paymentId: s.paymentId ?? '', coin: s.paidMethod ? s.paidMethod.toLowerCase() : '' })
+        else if (s.status === 'expired' || s.status === 'canceled' || s.status === 'cancelled') this.store.setStatus(id, 'expired')
+      } else {
+        const fresh = await coinpay.payment(id)
+        if (fresh.status && fresh.status !== row.status) this.store.setStatus(id, fresh.status)
+      }
     } catch {
       // CoinPay unreachable: show what we last knew.
     }
@@ -290,6 +342,10 @@ export type InvoiceInput = {
 
 /** What the payer needs to pay an invoice now, read from CoinPay's public invoice view. */
 export type InvoiceLive = { status: string; amountCrypto: string; address: string; number: string }
+
+/** The site the money is for, on every checkout session. */
+export const PROPERTY = 'pay.agent.pit.world'
+const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
 
 const clean = (v: unknown, max: number) => String(v ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max)
 
