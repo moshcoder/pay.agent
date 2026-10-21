@@ -92,3 +92,4 @@ details summary { cursor: pointer; font-weight: 600; }
 .ring-bar .ring-start { margin-left: auto; color: var(--accent); font-weight: 700; }
 @media (max-width: 640px) { .ring-bar .ring-home span { display: none; } }
 footer.pfs-footer { max-width: 760px; margin: 2rem auto 0; color: var(--muted); border-top-color: var(--line); --pfs-footer-muted: var(--muted); --pfs-footer-size: .88rem; }
+.hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }

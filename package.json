@@ -1,6 +1,6 @@
 {
   "name": "@profullstack/payagent",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "pay.agent: get paid in crypto with one link, Venmo for the agentic web. Sign in with CoinPay; pay anyone by handle from the web, API, CLI, TUI or MCP.",
   "license": "MIT",
   "type": "module",
