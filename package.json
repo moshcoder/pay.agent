@@ -1,6 +1,6 @@
 {
   "name": "@profullstack/payagent",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "pay.agent: get paid in crypto with one link, Venmo for the agentic web. Sign in with CoinPay; pay anyone by handle from the web, API, CLI, TUI or MCP.",
   "license": "MIT",
   "type": "module",
@@ -23,17 +23,20 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.17.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@profullstack/coinpay-onboard": "0.2.0",
-    "@profullstack/footer": "^0.2.4",
-    "@profullstack/hqtui": "^0.10.3",
-    "hono": "^4.8.0",
+    "@profullstack/footer": "^0.2.6",
+    "@profullstack/hqtui": "^0.11.1",
+    "hono": "^4.13.14",
     "qrcode": "^1.5.4",
-    "zod": "^3.25.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/bun": "^1.2.0",
-    "@types/qrcode": "^1.5.5",
-    "typescript": "^5.9.0"
+    "@types/bun": "^1.4.4",
+    "@types/qrcode": "^1.5.6",
+    "typescript": "^7.0.2"
+  },
+  "overrides": {
+    "zod": "^4.6.7"
   }
 }
