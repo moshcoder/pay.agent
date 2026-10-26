@@ -196,7 +196,7 @@ export function createApp(deps: Deps) {
     return page(c, dashboardPage(ctx, { user, payments: store.payments(user.handle), invoices: store.invoices(user.handle), qr, ...extra }))
   }
 
-  app.get('/me', (c) => (userOf(c) ? dashboard(c) : c.redirect('/auth/start')))
+  app.get('/me', async (c) => (userOf(c) ? dashboard(c) : c.redirect('/auth/start')))
 
   app.post('/me/:action{(recheck|key|delete)}', async (c) => {
     const user = userOf(c)
