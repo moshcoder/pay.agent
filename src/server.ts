@@ -17,7 +17,7 @@ import { CoinPay } from '@profullstack/coinpay-onboard'
 import { Sealer, Store, type User } from './db.js'
 import { checkoutPage, dashboardPage, helpPage, homePage, invoicePage, messagePage, payPage, setupDonePage, wizardPage, type Ctx } from './html.js'
 import { startPitFooterRefresh } from './pit-footer.js'
-import { ringDescriptor, startRingFooterRefresh } from './ring-footer.js'
+import { FOOTER_SCRIPT_SRC, ringDescriptor, startRingFooterRefresh } from './ring-footer.js'
 import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from './ring.js'
 import { PayAgent, SetupError, type Config, type InvoiceInput, type Recurrence } from './service.js'
 import { VERSION } from './version.js'
@@ -30,7 +30,7 @@ const RELAY_ORIGIN = 'https://pay.agent.pit.world'
 const SESSION = 'pa_session'
 
 const SECURITY_HEADERS: Record<string, string> = {
-  'content-security-policy': "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' https://crawlproof.com; img-src 'self' data: https://built.indie.pit.world https://pwamart.com; connect-src 'self' https://crawlproof.com; frame-src https://crawlproof.com; form-action 'self' https://coinpayportal.com; base-uri 'none'; frame-ancestors 'none'",
+  'content-security-policy': `default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' https://crawlproof.com ${FOOTER_SCRIPT_SRC}; img-src 'self' data: https://built.indie.pit.world https://pwamart.com; connect-src 'self' https://crawlproof.com https://pit.world; frame-src https://crawlproof.com; form-action 'self' https://coinpayportal.com https://pit.world; base-uri 'none'; frame-ancestors 'none'`,
   'referrer-policy': 'strict-origin-when-cross-origin',
   'x-content-type-options': 'nosniff',
   'permissions-policy': 'interest-cohort=(), browsing-topics=(), camera=(), microphone=(), geolocation=()',

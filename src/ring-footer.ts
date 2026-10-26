@@ -8,7 +8,8 @@
  * template in the background every 15 minutes, so a page never waits on the CDN and
  * a footer release reaches us without a redeploy. A failed read keeps the last copy.
  */
-import { descriptor, footerHtml, footerHtmlSync, type FooterOptions } from '@profullstack/footer'
+import { createHash } from 'node:crypto'
+import { descriptor, footerHtml, footerHtmlSync, subscribeForm, type FooterOptions } from '@profullstack/footer'
 
 /** The ring member URL (the web2 hostname; hops are measured from it). */
 export const RING_SITE = 'https://pay.agent.pit.world/'
@@ -22,6 +23,16 @@ const OPTIONS: FooterOptions = {
     { label: 'Payments by CoinPay', href: 'https://coinpayportal.com' },
   ],
 }
+
+/**
+ * The CSP source for the footer's inline newsletter script (wireSubscribe, since 0.4.0), as
+ * 'sha256-...'. Our CSP has no 'unsafe-inline' and the footer is a cached string, so a per-request
+ * nonce cannot reach it; the renderer (not the CDN template) emits the same bytes every time.
+ */
+export const FOOTER_SCRIPT_SRC: string = (() => {
+  const m = subscribeForm(RING_SITE).match(/<script[^>]*>([\s\S]*?)<\/script>/)
+  return m?.[1] ? `'sha256-${createHash('sha256').update(m[1]).digest('base64')}'` : ''
+})()
 
 let cached = footerHtmlSync(OPTIONS)
 
