@@ -8,7 +8,7 @@ import { PayAgentClient } from '../src/client.ts'
 
 /** CoinPay, faked: OAuth, businesses, wallets, payments. */
 function fakeCoinPay() {
-  const state = { businesses: [] as any[], accountWallets: [{ cryptocurrency: 'USDC_SOL', wallet_address: 'So1Payout' }] as any[], payments: new Map<string, any>(), refreshes: 0, lastPaymentBody: null as any, sessions: new Map<string, any>(), lastSessionBody: null as any, sessionAuth: [] as string[], invoices: new Map<string, any>(), clients: [] as any[], invoiceAuth: [] as string[] }
+  const state = { businesses: [] as any[], accountWallets: [{ cryptocurrency: 'USDC_SOL', wallet_address: 'So1Payout' }] as any[], payments: new Map<string, any>(), refreshes: 0, lastPaymentBody: null as any, sessions: new Map<string, any>(), lastSessionBody: null as any, sessionAuth: [] as string[], invoices: new Map<string, any>(), clients: [] as any[], invoiceAuth: [] as string[], consents: [] as any[] }
   const fetchImpl = (async (url: string | URL, init: RequestInit = {}) => {
     const u = new URL(String(url))
     const method = init.method ?? 'GET'
@@ -19,6 +19,12 @@ function fakeCoinPay() {
     if (path === '/api/oauth/token') {
       if (body.grant_type === 'refresh_token') state.refreshes++
       return json(200, { access_token: 'at-' + (body.grant_type === 'refresh_token' ? 'refreshed' : 'first'), refresh_token: 'rt-' + Math.random(), expires_in: 3600, scope: 'openid profile email wallet:read merchant' })
+    }
+    if (path === '/api/auth/login') return body.password === 'right' ? json(200, { success: true, token: 'cp-session' }) : json(401, { success: false, error: 'Invalid email or password' })
+    if (path === '/api/oauth/authorize' && method === 'POST') {
+      if (new Headers(init.headers).get('authorization') !== 'Bearer cp-session') return json(401, { error: 'login_required' })
+      state.consents.push(body)
+      return json(200, { redirect: `${body.redirect_uri}?code=c-headless&state=${body.state}` })
     }
     if (path === '/api/oauth/userinfo') return json(200, { sub: 'merchant-1', name: 'Alice Smith', email: 'alice@example.com' })
     if (path === '/api/businesses' && method === 'GET') return json(200, { success: true, businesses: state.businesses })
@@ -381,5 +387,71 @@ describe('webhook settling', () => {
     const other = await (await post({ id: 'evt_s', type: 'payment.confirmed', business_id: 'b1', data: { payment_id: 'pay_other', status: 'confirmed' } })).json()
     expect(other).toMatchObject({ ok: true, matched: false })
     expect(t.store.payment('pay_other')!.status).toBe('pending')
+  })
+})
+
+describe('claiming without a browser', () => {
+  /** A PayAgentClient whose pay.agent is the app under test and whose CoinPay is the fake. */
+  function headless() {
+    const cp = fakeCoinPay()
+    const store = new Store(':memory:', new Sealer('test-key-0123456789abcdef'))
+    const app = createApp({ store, key: 'test-key-0123456789abcdef', secureCookies: false, config: { coinpayBase: 'https://cp.test', clientId: 'cp_client', webhookOrigin: 'https://pay.agent.pit.world', fetch: cp.fetchImpl } })
+    const doFetch = (async (url: string | URL, init: RequestInit = {}) => {
+      const u = new URL(String(url))
+      if (u.host === 'cp.test') return cp.fetchImpl(url, init)
+      const headers = new Headers(init.headers)
+      headers.set('host', 'pay.agent')
+      return app.fetch(new Request(`http://localhost${u.pathname}${u.search}`, { ...init, headers }), { ip: '1.2.3.4' })
+    }) as typeof fetch
+    const client = (key?: string) => new PayAgentClient('https://pay.agent', key, doFetch)
+    return { cp, store, client }
+  }
+
+  test('an agent with CoinPay credentials claims a handle and gets a working key', async () => {
+    const h = headless()
+    const c = await h.client().claim({ handle: '@Bot', coinpayEmail: 'bot@example.com', coinpayPassword: 'right' })
+    expect(c).toMatchObject({ handle: 'bot', url: 'https://pay.agent/bot', mode: 'wallet', new: true })
+    expect(c.api_key).toMatch(/^pa_/)
+    // The consent went to CoinPay bound to PKCE, with the scopes the browser flow asks for.
+    expect(h.cp.state.consents[0]).toMatchObject({ client_id: 'cp_client', redirect_uri: 'https://pay.agent/auth/callback', code_challenge_method: 'S256', action: 'approve' })
+    expect(h.cp.state.consents[0].scope).toContain('merchant')
+    expect(h.cp.state.businesses[0]).toMatchObject({ name: 'pay.agent/bot' })
+    const me = await h.client(c.api_key).me()
+    expect(me.handle).toBe('bot')
+  })
+
+  test('claiming again mints a new key for the same handle, and the old one stops working', async () => {
+    const h = headless()
+    const first = await h.client().claim({ handle: 'bot', coinpayToken: 'cp-session' })
+    const again = await h.client().claim({ coinpayToken: 'cp-session' })
+    expect(again).toMatchObject({ handle: 'bot', new: false })
+    expect(again.api_key).not.toBe(first.api_key)
+    expect(h.cp.state.businesses).toHaveLength(1)
+    await expect(h.client(first.api_key).me()).rejects.toThrow()
+    expect((await h.client(again.api_key).me()).handle).toBe('bot')
+  })
+
+  test('a code is good once, a wrong password never reaches pay.agent, and a first claim needs a handle', async () => {
+    const h = headless()
+    await expect(h.client().claim({ handle: 'bot', coinpayEmail: 'bot@example.com', coinpayPassword: 'wrong' })).rejects.toThrow(/CoinPay sign-in/)
+    await expect(h.client().claim({ coinpayToken: 'cp-session' })).rejects.toThrow(/handle/)
+    const start = await (await h.client() as any).call('POST', '/api/v1/claim/start', {})
+    const redirect = `https://pay.agent/auth/callback?code=c1&state=${start.state}`
+    await (h.client() as any).call('POST', '/api/v1/claim', { redirect, handle: 'bot' })
+    await expect((h.client() as any).call('POST', '/api/v1/claim', { redirect, handle: 'bot' })).rejects.toThrow(/expired or was used/)
+  })
+
+  test('the CLI prints the link and the key', async () => {
+    const h = headless()
+    const lines: string[] = []
+    process.env.COINPAY_TOKEN = 'cp-session'
+    try {
+      const code = await main(['claim', 'clibot'], { log: (t) => lines.push(t), error: (t) => lines.push(t) }, h.client())
+      expect(code).toBe(0)
+    } finally {
+      delete process.env.COINPAY_TOKEN
+    }
+    expect(lines.join('\n')).toContain('Claimed https://pay.agent/clibot')
+    expect(lines.join('\n')).toMatch(/PAYAGENT_KEY=pa_/)
   })
 })

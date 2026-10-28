@@ -6,6 +6,7 @@
  *   payagent who <handle>             who they are and which coins they take
  *   payagent status <payment-id> [--wait]
  *   payagent me                       your link and payments (PAYAGENT_KEY)
+ *   payagent claim <handle>           claim a link with no browser (COINPAY_EMAIL + COINPAY_PASSWORD)
  *   payagent invoice <email> <usd> <what for…> [--coin=x] [--due=YYYY-MM-DD] [--repeat=monthly] [--no-email]
  *   payagent invoices                 invoices you sent (PAYAGENT_KEY)
  *   payagent mcp                      MCP server on stdio
@@ -23,6 +24,10 @@ export const HELP = `payagent ${VERSION}: get paid, and pay, in crypto (https://
   payagent who <handle>             their name and the coins they take
   payagent status <id> [--wait]     a payment's status; --wait until it settles
   payagent me                       your link and payments (PAYAGENT_KEY=pa_…)
+  payagent claim [handle] [--business=<id>]
+                                    claim your link, or a new key for it, with no
+                                    browser: signs in to CoinPay with COINPAY_TOKEN
+                                    or COINPAY_EMAIL + COINPAY_PASSWORD
   payagent invoice <email> <usd> <what for…>
            [--coin=usdc_sol] [--due=2026-11-30] [--repeat=monthly] [--no-email]
                                     send an invoice; CoinPay emails the pay link
@@ -74,6 +79,12 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
       case 'who': {
         const u = await client.user(rest[0] ?? '')
         show(u, `${u.name || u.handle}  ${u.url}\ntakes: ${u.coins.join(', ') || 'nothing yet'}`)
+        return 0
+      }
+      case 'claim': {
+        const business = flag('business')
+        const c = await client.claim({ ...(rest[0] ? { handle: rest[0] } : {}), ...(business ? { mode: 'business' as const, businessId: business } : {}) })
+        show(c, `${c.new ? 'Claimed' : 'Signed in as'} ${c.url}${c.coins.length ? `\ntakes: ${c.coins.join(', ')}` : '\nno payout wallet yet: add one in CoinPay'}\n\nYour API key (shown once):\n  export PAYAGENT_KEY=${c.api_key}`)
         return 0
       }
       case 'me': {

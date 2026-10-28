@@ -14,6 +14,12 @@ your CoinPay business. pay.agent never holds funds.
   MCP `send_invoice`. Each one has a public page at `pay.agent/i/<id>`.
 - **CLI / TUI**: `bunx @profullstack/payagent alice 5 --email=me@example.com`, or `bunx @profullstack/payagent`
 - **MCP**: `claude mcp add payagent -- bunx @profullstack/payagent mcp`
+- **Agents, no browser**: `COINPAY_EMAIL=… COINPAY_PASSWORD=… bunx @profullstack/payagent claim mybot` (or
+  `COINPAY_TOKEN`, or MCP `claim`) signs in to CoinPay as you, approves pay.agent with that session, claims
+  `pay.agent/mybot` and prints a `pa_` key. Run it again any time for a new key. By hand:
+  `POST /api/v1/claim/start` → the PKCE-bound authorize request; `POST <consent.endpoint>` with
+  `authorization: Bearer <CoinPay session>` and `consent.body` → `{ redirect }`; `POST /api/v1/claim
+  {"redirect", "handle"}` → your link and `api_key`. Your CoinPay credentials only ever go to CoinPay.
 
 Onboarding is [@profullstack/coinpay-onboard](https://github.com/profullstack/coinpay-onboard):
 one pass makes the CoinPay business, payout wallets and webhook. The same
