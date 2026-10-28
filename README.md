@@ -26,6 +26,13 @@ your CoinPay business. pay.agent never holds funds.
   `POST /api/v1/claim/start` → the PKCE-bound authorize request; `POST <consent.endpoint>` with
   `authorization: Bearer <CoinPay session>` and `consent.body` → `{ redirect }`; `POST /api/v1/claim
   {"redirect", "handle"}` → your link and `api_key`. Your CoinPay credentials only ever go to CoinPay.
+- **Coins and cards** (0.7.0): a new link also takes USDC on Base, Polygon and Solana at an address the owner
+  already has on that chain (added as wallets of the `pay.agent/<handle>` business only; `"stablecoins": false`
+  on claim, or untick it in the wizard, to skip). The owner picks what the link takes on `/me#takes`,
+  `PUT /api/v1/me/coins {"coins": ["usdc_base", "sol", "paypal"] | "all"}`, `{"add_stablecoins": true}`,
+  `payagent coins set|add-usdc|recheck`, or MCP `my_coins`; checkouts pass the pick as `allowed_methods`.
+  Cards go through PayPal guest checkout once the owner connects their own PayPal REST app to that CoinPay
+  business (`/help#cards`); `card` in the API turns true at the first checkout that offers it. No Stripe.
 
 Onboarding is [@profullstack/coinpay-onboard](https://github.com/profullstack/coinpay-onboard):
 one pass makes the CoinPay business, payout wallets and webhook. The same

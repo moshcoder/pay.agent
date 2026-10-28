@@ -25,8 +25,9 @@ export type ApiInvoice = {
 export type InvoiceRequest = { to_email: string; to_name?: string; description: string; amount_usd: number; coin?: string; due_date?: string; recurrence?: string; email?: boolean }
 export type ApiWebhook = { id: string; url: string; events: string[]; description: string; enabled: boolean; failures: number; disabled_reason: string | null; created_at: string; updated_at: string }
 export type ApiDelivery = { id: string; endpoint_id: string; event_id: string; event_type: string; status: string; attempts: number; next_at: string | null; last_status: number | null; last_error: string | null; created_at: string; updated_at: string; payload?: unknown }
-export type ApiUser = { handle: string; name: string; coins: string[]; url: string }
-export type ClaimOptions = { handle?: string; mode?: 'wallet' | 'business'; businessId?: string; coinpayToken?: string; coinpayEmail?: string; coinpayPassword?: string; coinpayBase?: string }
+export type ApiUser = { handle: string; name: string; coins: string[]; card: boolean | null; url: string }
+export type ApiCoins = ApiUser & { payable: string[]; accepts: string[] | 'all'; steps?: unknown[]; unavailable?: string[]; note?: string; add_stablecoins?: string; cards: string }
+export type ClaimOptions = { handle?: string; mode?: 'wallet' | 'business'; businessId?: string; coins?: string[] | 'all'; stablecoins?: boolean; coinpayToken?: string; coinpayEmail?: string; coinpayPassword?: string; coinpayBase?: string }
 export type ApiClaim = ApiUser & { mode: string | null; api_key: string; steps: unknown[]; new: boolean }
 
 export class ApiError extends Error {
@@ -82,7 +83,19 @@ export class PayAgentClient {
       ...(options.handle ? { handle: options.handle.replace(/^@/, '') } : {}),
       ...(options.mode ? { mode: options.mode } : {}),
       ...(options.businessId ? { business_id: options.businessId } : {}),
+      ...(options.coins ? { coins: options.coins } : {}),
+      ...(typeof options.stablecoins === 'boolean' ? { stablecoins: options.stablecoins } : {}),
     })
+  }
+
+  /** What your link takes: payable (has a CoinPay wallet), accepts (your pick), coins + card (what payers see). */
+  coins(): Promise<ApiCoins> {
+    return this.keyed('GET', '/api/v1/me/coins')
+  }
+
+  /** Pick what your link takes (coin ids, paypal, or 'all'); addStablecoins first adds USDC at your existing addresses. */
+  setCoins(input: { coins?: string[] | 'all'; addStablecoins?: boolean; recheck?: boolean }): Promise<ApiCoins> {
+    return this.keyed('PUT', '/api/v1/me/coins', { ...(input.coins ? { coins: input.coins } : {}), ...(input.addStablecoins ? { add_stablecoins: true } : {}), ...(input.recheck ? { recheck: true } : {}) })
   }
 
   user(handle: string): Promise<ApiUser> {

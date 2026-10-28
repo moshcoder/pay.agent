@@ -21,7 +21,7 @@ import { startPitFooterRefresh } from './pit-footer.js'
 import { FOOTER_SCRIPT_SRC, ringDescriptor, startRingFooterRefresh } from './ring-footer.js'
 import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from './ring.js'
 import { parseTtl } from '@profullstack/sealed-secrets'
-import { PayAgent, SetupError, errorStatus, type Config, type InvoiceInput, type Recurrence } from './service.js'
+import { DEFAULT_STABLES, PAYPAL, PayAgent, SetupError, coinName, errorStatus, offered, parseAccepts, type Config, type InvoiceInput, type Recurrence } from './service.js'
 import { VERSION } from './version.js'
 
 export { VERSION }
@@ -193,6 +193,7 @@ export function createApp(deps: Deps) {
         mode,
         ...(form.business_id ? { businessId: form.business_id } : {}),
         ...(form.address?.trim() && form.address_coin ? { addresses: { [form.address_coin]: form.address } } : {}),
+        stablecoins: form.stablecoins === 'on' ? (mode === 'wallet' ? undefined : true) : false,
       })
       return page(c, setupDonePage(ctxOf(c), { handle: store.user(user.sub)!.handle!, steps: r.steps, coins: r.coins }))
     } catch (e) {
@@ -213,7 +214,7 @@ export function createApp(deps: Deps) {
 
   app.get('/me', async (c) => (userOf(c) ? dashboard(c) : c.redirect('/auth/start')))
 
-  app.post('/me/:action{(recheck|key|delete|lock|ttl)}', async (c) => {
+  app.post('/me/:action{(recheck|key|delete|lock|ttl|coins|stablecoins)}', async (c) => {
     const user = userOf(c)
     if (!user) return c.redirect('/auth/start')
     const form = await c.req.parseBody()
@@ -224,6 +225,22 @@ export function createApp(deps: Deps) {
           const before = user.coins
           const coins = await agent.recheck(user)
           return dashboard(c, { coinsNote: PayAgent.recheckMessage(before, coins) })
+        } catch (e) {
+          return dashboard(c, { coinsNote: `CoinPay did not answer: ${e instanceof Error ? e.message : e}` })
+        }
+      case 'coins':
+        try {
+          const picked = form.all === 'on' ? 'all' : Object.keys(form).filter((k) => k.startsWith('take_')).map((k) => k.slice(5))
+          const r = agent.setAccepts(user, picked)
+          return dashboard(c, { coinsNote: r.accepts ? `Saved: your link takes ${[...r.offered.coins.map(coinName), ...(r.accepts.includes(PAYPAL) ? ['PayPal and cards'] : [])].join(', ') || 'nothing it has a wallet for yet'}.` : 'Saved: your link takes everything CoinPay can pay it in.' })
+        } catch (e) {
+          return dashboard(c, { coinsNote: e instanceof Error ? e.message : String(e) })
+        }
+      case 'stablecoins':
+        try {
+          const before = user.coins
+          const r = await agent.addStablecoins(user)
+          return dashboard(c, { coinsNote: r.steps.length ? PayAgent.recheckMessage(before, r.coins) : 'Nothing to add: USDC needs an address you already have on Base/Polygon/Ethereum (0x…) or Solana. Add one in CoinPay first.' })
         } catch (e) {
           return dashboard(c, { coinsNote: `CoinPay did not answer: ${e instanceof Error ? e.message : e}` })
         }
@@ -305,7 +322,13 @@ export function createApp(deps: Deps) {
   })
 
   // The API: anyone may pay anyone; an owner reads their own with a key.
-  const publicUser = (u: User, o: string) => ({ handle: u.handle, name: u.name, coins: u.coins, url: `${o}/${u.handle}` })
+  // coins: what a payer can pay in now; card: PayPal (and cards through it) on the checkout, null until a checkout showed.
+  const publicUser = (u: User, o: string) => {
+    const now = offered(u)
+    return { handle: u.handle, name: u.name, coins: now.coins, card: now.card, url: `${o}/${u.handle}` }
+  }
+  // The owner's view adds what CoinPay could take and what they chose.
+  const ownerView = (u: User) => ({ payable: u.coins, accepts: u.accepts ?? 'all', mode: u.mode, business: u.businessName, business_id: u.businessId })
   const publicPayment = (p: NonNullable<ReturnType<Store['payment']>>, o: string) => ({
     id: p.id,
     handle: p.handle,
@@ -374,7 +397,42 @@ export function createApp(deps: Deps) {
     const u = keyUser(c)
     if (!u?.handle) return c.json(NO_KEY, 401)
     const access = agent.access(u.sub)
-    return c.json({ ...publicUser(u, origin(c)), mode: u.mode, business: u.businessName, locked: !access.unlocked, unlocked_until: access.expiresAt, payments: store.payments(u.handle).map((p) => ({ ...publicPayment(p, origin(c)), note: p.note, payer: p.payer, created_at: new Date(p.createdAt).toISOString() })) })
+    return c.json({ ...publicUser(u, origin(c)), ...ownerView(u), locked: !access.unlocked, unlocked_until: access.expiresAt, payments: store.payments(u.handle).map((p) => ({ ...publicPayment(p, origin(c)), note: p.note, payer: p.payer, created_at: new Date(p.createdAt).toISOString() })) })
+  })
+
+  /*
+   * What the link takes. GET: payable (has a CoinPay wallet), accepts (the
+   * owner's pick), coins + card (what payers see). PUT { coins: [...] | "all" }
+   * picks; { add_stablecoins: true } first adds USDC on Base, Polygon and
+   * Solana at addresses the owner already has; { recheck: true } re-reads
+   * CoinPay. Cards are PayPal on the CoinPay business (see /help#cards).
+   */
+  app.get('/api/v1/me/coins', (c) => {
+    const u = keyUser(c)
+    if (!u) return c.json(NO_KEY, 401)
+    return c.json(coinsView(u, origin(c)))
+  })
+  app.put('/api/v1/me/coins', async (c) => {
+    let u = keyUser(c)
+    if (!u) return c.json(NO_KEY, 401)
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>
+    try {
+      let steps: unknown[] = []
+      if (body.add_stablecoins === true) steps = (await agent.addStablecoins(u)).steps
+      else if (body.recheck === true) await agent.recheck(u)
+      u = store.user(u.sub)!
+      const unavailable = body.coins !== undefined ? agent.setAccepts(u, body.coins).unavailable : []
+      return c.json({ ...coinsView(store.user(u.sub)!, origin(c)), ...(steps.length ? { steps } : {}), ...(unavailable.length ? { unavailable, note: `no CoinPay wallet for ${unavailable.join(', ')} yet: add one (or add_stablecoins), then recheck` } : {}) })
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e))
+    }
+  })
+  const coinsView = (u: User, o: string) => ({
+    ...publicUser(u, o),
+    payable: u.coins,
+    accepts: u.accepts ?? 'all',
+    ...(DEFAULT_STABLES.some((s) => !u.coins.includes(s)) ? { add_stablecoins: 'PUT {"add_stablecoins": true} adds USDC on Base, Polygon and Solana at addresses you already have on those chains' } : {}),
+    cards: `${o}/help#cards`,
   })
 
   /*
@@ -446,13 +504,15 @@ export function createApp(deps: Deps) {
           mode: str('mode') === 'business' ? 'business' : 'wallet',
           ...(str('business_id') ? { businessId: str('business_id') } : {}),
           ...(str('address') && str('address_coin') ? { addresses: { [str('address_coin')]: str('address') } } : {}),
+          ...(body.coins !== undefined ? { accepts: parseAccepts(body.coins) } : {}),
+          ...(typeof body.stablecoins === 'boolean' ? { stablecoins: body.stablecoins } : {}),
         })
         steps = r.steps
       }
       const key = `pa_${randomBytes(24).toString('base64url')}`
       store.setApiKey(user.sub, key)
       const u = store.user(user.sub)!
-      return c.json({ ...publicUser(u, origin(c)), mode: u.mode, api_key: key, steps, new: steps.length > 0 }, steps.length ? 201 : 200)
+      return c.json({ ...publicUser(u, origin(c)), ...ownerView(u), api_key: key, steps, new: steps.length > 0 }, steps.length ? 201 : 200)
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e), ...(e instanceof SetupError && e.field ? { field: e.field } : {}) }, errorStatus(e))
     }
