@@ -24,6 +24,8 @@ export type ApiInvoice = {
 }
 export type InvoiceRequest = { to_email: string; to_name?: string; description: string; amount_usd: number; coin?: string; due_date?: string; recurrence?: string; email?: boolean }
 export type ApiUser = { handle: string; name: string; coins: string[]; url: string }
+export type ClaimOptions = { handle?: string; mode?: 'wallet' | 'business'; businessId?: string; coinpayToken?: string; coinpayEmail?: string; coinpayPassword?: string; coinpayBase?: string }
+export type ApiClaim = ApiUser & { mode: string | null; api_key: string; steps: unknown[]; new: boolean }
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) {
@@ -47,6 +49,38 @@ export class PayAgentClient {
     const data = (await response.json().catch(() => ({}))) as { error?: string }
     if (!response.ok) throw new ApiError(data.error ?? `pay.agent answered ${response.status}`, response.status)
     return data as T
+  }
+
+  /**
+   * Claim a handle (or get a fresh key for the one you have) with no browser:
+   * sign in to CoinPay as yourself, approve pay.agent on CoinPay with that
+   * session, and trade the code for the handle and a pa_ key. Credentials come
+   * from the options or COINPAY_TOKEN / COINPAY_EMAIL + COINPAY_PASSWORD, and
+   * go only to CoinPay. Approving gives pay.agent the same CoinPay access the
+   * consent screen lists; CoinPay never lets it move funds.
+   */
+  async claim(options: ClaimOptions = {}): Promise<ApiClaim> {
+    const start = await this.call<{ state: string; consent: { endpoint: string; body: Record<string, string> } }>('POST', '/api/v1/claim/start', {})
+    const coinpay = new URL(start.consent.endpoint).origin
+    let token = options.coinpayToken ?? process.env.COINPAY_TOKEN
+    if (!token) {
+      const email = options.coinpayEmail ?? process.env.COINPAY_EMAIL
+      const password = options.coinpayPassword ?? process.env.COINPAY_PASSWORD
+      if (!email || !password) throw new ApiError('set COINPAY_TOKEN, or COINPAY_EMAIL and COINPAY_PASSWORD, to sign in to CoinPay', 400)
+      const login = await this.doFetch(`${options.coinpayBase ?? coinpay}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ email, password }), signal: AbortSignal.timeout(30_000) })
+      const data = (await login.json().catch(() => ({}))) as { token?: string; error?: string }
+      if (!login.ok || !data.token) throw new ApiError(`CoinPay sign-in: ${data.error ?? login.status}`, login.status || 401)
+      token = data.token
+    }
+    const consent = await this.doFetch(start.consent.endpoint, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify(start.consent.body), signal: AbortSignal.timeout(30_000) })
+    const approved = (await consent.json().catch(() => ({}))) as { redirect?: string; error_description?: string; error?: string }
+    if (!consent.ok || !approved.redirect) throw new ApiError(`CoinPay consent: ${approved.error_description ?? approved.error ?? consent.status}`, consent.status || 400)
+    return this.call('POST', '/api/v1/claim', {
+      redirect: approved.redirect,
+      ...(options.handle ? { handle: options.handle.replace(/^@/, '') } : {}),
+      ...(options.mode ? { mode: options.mode } : {}),
+      ...(options.businessId ? { business_id: options.businessId } : {}),
+    })
   }
 
   user(handle: string): Promise<ApiUser> {

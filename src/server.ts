@@ -122,6 +122,18 @@ export function createApp(deps: Deps) {
     return c.redirect(url.toString())
   })
 
+  /**
+   * A CoinPay authorization code, made into a signed-in pay.agent user. Shared
+   * by the browser callback and the headless claim, so both refuse a grant
+   * without `merchant` the same way.
+   */
+  const signInWith = async (code: string, saved: { verifier: string; redirectUri: string }): Promise<User> => {
+    const tokens = await exchangeCode({ code, verifier: saved.verifier, clientId: config.clientId, ...(config.clientSecret ? { clientSecret: config.clientSecret } : {}), redirectUri: saved.redirectUri, base: config.coinpayBase, ...(config.fetch ? { fetch: config.fetch } : {}) })
+    if (!tokens.scope.split(' ').includes('merchant')) throw new SetupError('pay.agent needs to set up payments on your CoinPay account. Sign in again and allow it.')
+    const me = await new CoinPay({ base: config.coinpayBase, token: tokens.accessToken, ...(config.fetch ? { fetch: config.fetch } : {}) }).userinfo()
+    return store.upsertUser(me.sub, me.name ?? '', me.email ?? '', tokens)
+  }
+
   app.get('/auth/callback', async (c) => {
     const ctx = ctxOf(c)
     const error = c.req.query('error')
@@ -130,16 +142,12 @@ export function createApp(deps: Deps) {
     const code = c.req.query('code')
     if (!saved || !code) return page(c, messagePage(ctx, { title: 'Sign-in expired', message: 'That sign-in link is old. Start again.' }), 400)
     try {
-      const tokens = await exchangeCode({ code, verifier: saved.verifier, clientId: config.clientId, ...(config.clientSecret ? { clientSecret: config.clientSecret } : {}), redirectUri: saved.redirectUri, base: config.coinpayBase, ...(config.fetch ? { fetch: config.fetch } : {}) })
-      if (!tokens.scope.split(' ').includes('merchant')) {
-        return page(c, messagePage(ctx, { title: 'One more permission', message: 'pay.agent needs to set up payments on your CoinPay account. Sign in again and allow it.' }), 400)
-      }
-      const me = await new CoinPay({ base: config.coinpayBase, token: tokens.accessToken, ...(config.fetch ? { fetch: config.fetch } : {}) }).userinfo()
-      const user = store.upsertUser(me.sub, me.name ?? '', me.email ?? '', tokens)
+      const user = await signInWith(code, saved)
       const sid = store.newSession(user.sub)
       setCookie(c, SESSION, sid, { httpOnly: true, secure: deps.secureCookies ?? https(c), sameSite: 'Lax', path: '/', maxAge: 30 * 86400 })
       return c.redirect(user.handle ? '/me' : '/start')
     } catch (e) {
+      if (e instanceof SetupError) return page(c, messagePage(ctx, { title: 'One more permission', message: e.message }), 400)
       return page(c, messagePage(ctx, { title: 'Sign-in failed', message: e instanceof Error ? e.message : 'CoinPay did not answer.' }), 502)
     }
   })
@@ -306,6 +314,87 @@ export function createApp(deps: Deps) {
     const u = keyUser(c)
     if (!u?.handle) return c.json(NO_KEY, 401)
     return c.json({ ...publicUser(u, origin(c)), mode: u.mode, business: u.businessName, payments: store.payments(u.handle).map((p) => ({ ...publicPayment(p, origin(c)), note: p.note, payer: p.payer, created_at: new Date(p.createdAt).toISOString() })) })
+  })
+
+  /*
+   * Claiming a handle without a browser.
+   *
+   * The browser flow is CoinPay's consent screen, then a cookie, then a form.
+   * An agent has none of those, but it does have a CoinPay session (POST
+   * /api/auth/login), and CoinPay takes consent from that session as a Bearer
+   * on POST /api/oauth/authorize. So: start hands out the same PKCE-bound
+   * authorize request /auth/start would redirect to, the agent approves it as
+   * itself, and claim trades the code for the handle and an API key. The
+   * verifier never leaves this server, exactly as in the browser flow.
+   * Claiming again with a handle already set just mints a new key, which is
+   * how an agent whose key or CoinPay grant lapsed gets back in.
+   */
+  app.post('/api/v1/claim/start', (c) => {
+    if (!authLimit.allow(`auth:${ip(c)}`)) return c.json({ error: 'too many sign-in attempts; try again in a few minutes' }, 429)
+    const state = randomBytes(16).toString('base64url')
+    const { verifier, challenge } = pkce()
+    const redirectUri = `${origin(c)}/auth/callback`
+    store.saveState(state, verifier, redirectUri)
+    const url = new URL(authorizeUrl({ clientId: config.clientId, redirectUri, state, challenge, base: config.coinpayBase }))
+    const q = Object.fromEntries(url.searchParams)
+    return c.json({
+      state,
+      expires_in: 900,
+      authorize_url: url.toString(),
+      consent: {
+        endpoint: `${url.origin}${url.pathname}`,
+        method: 'POST',
+        auth: 'authorization: Bearer <your CoinPay session token from POST /api/auth/login>',
+        body: { client_id: q.client_id, redirect_uri: q.redirect_uri, scope: q.scope, state, code_challenge: q.code_challenge, code_challenge_method: 'S256', action: 'approve' },
+      },
+      next: 'POST /api/v1/claim with { state, code } (or { redirect } as CoinPay returned it) and the handle you want',
+    })
+  })
+
+  app.post('/api/v1/claim', async (c) => {
+    if (!authLimit.allow(`auth:${ip(c)}`)) return c.json({ error: 'too many sign-in attempts; try again in a few minutes' }, 429)
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>
+    const str = (k: string) => (typeof body[k] === 'string' ? (body[k] as string).trim() : '')
+    let code = str('code')
+    let state = str('state')
+    if (str('redirect')) {
+      try {
+        const r = new URL(str('redirect'))
+        code ||= r.searchParams.get('code') ?? ''
+        state ||= r.searchParams.get('state') ?? ''
+        if (r.searchParams.get('error')) return c.json({ error: r.searchParams.get('error_description') ?? r.searchParams.get('error') }, 400)
+      } catch {
+        return c.json({ error: 'redirect is not a URL' }, 400)
+      }
+    }
+    if (!code || !state) return c.json({ error: 'send { state, code } from CoinPay, or { redirect }' }, 400)
+    const saved = store.takeState(state)
+    if (!saved) return c.json({ error: 'that claim expired or was used; POST /api/v1/claim/start again' }, 400)
+    let user: User
+    try {
+      user = await signInWith(code, saved)
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : 'CoinPay did not answer' }, e instanceof SetupError ? 400 : 502)
+    }
+    try {
+      let steps: unknown[] = []
+      if (!user.handle) {
+        if (!str('handle')) return c.json({ error: 'signed in to CoinPay; now send the handle you want (claim again from /api/v1/claim/start)' }, 400)
+        const r = await agent.setup(user, {
+          handle: str('handle'),
+          mode: str('mode') === 'business' ? 'business' : 'wallet',
+          ...(str('business_id') ? { businessId: str('business_id') } : {}),
+          ...(str('address') && str('address_coin') ? { addresses: { [str('address_coin')]: str('address') } } : {}),
+        })
+        steps = r.steps
+      }
+      const key = `pa_${randomBytes(24).toString('base64url')}`
+      store.setApiKey(user.sub, key)
+      const u = store.user(user.sub)!
+      return c.json({ ...publicUser(u, origin(c)), mode: u.mode, api_key: key, steps, new: steps.length > 0 }, steps.length ? 201 : 200)
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e), ...(e instanceof SetupError && e.field ? { field: e.field } : {}) }, e instanceof SetupError ? 400 : 502)
+    }
   })
 
   // Invoices: an owner sends and lists with their key; anyone with the id can read one.

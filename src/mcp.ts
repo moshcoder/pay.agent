@@ -32,6 +32,14 @@ export function createMcpServer(client = new PayAgentClient()): McpServer {
   server.tool('payment_status', 'A payment\'s status: pending, confirmed, forwarded or completed (paid), expired or failed.', { payment_id: z.string().min(1) }, async ({ payment_id }: { payment_id: string }) => {
     try { return text(await client.payment(payment_id)) } catch (e) { return failure(e) }
   })
+  server.tool(
+    'claim',
+    'Claim your own pay.agent link with no browser, or get a new API key for the one you have. Signs in to CoinPay with COINPAY_TOKEN or COINPAY_EMAIL + COINPAY_PASSWORD from the environment and approves pay.agent as you (it can never move your funds). Returns the link and a pa_ key: set it as PAYAGENT_KEY.',
+    { handle: handle.optional().describe('The handle to claim; leave out to get a new key for the one you have'), business_id: z.string().optional().describe('Take payments into this CoinPay business of yours instead of a new pay.agent one') },
+    async ({ handle, business_id }: { handle?: string; business_id?: string }) => {
+      try { return text(await client.claim({ ...(handle ? { handle } : {}), ...(business_id ? { mode: 'business' as const, businessId: business_id } : {}) })) } catch (e) { return failure(e) }
+    },
+  )
   server.tool('my_payments', 'Your own pay.agent link and the payments made to it (needs PAYAGENT_KEY).', {}, async () => {
     try { return text(await client.me()) } catch (e) { return failure(e) }
   })
