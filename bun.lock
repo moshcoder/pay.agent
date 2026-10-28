@@ -9,7 +9,7 @@
         "@profullstack/coinpay-onboard": "0.2.0",
         "@profullstack/footer": "0.4.0",
         "@profullstack/hqtui": "^0.11.1",
-        "@profullstack/webhooks": "0.2.0",
+        "@profullstack/webhooks": "0.2.1",
         "hono": "^4.13.14",
         "qrcode": "^1.5.4",
         "zod": "^4.6.7",
@@ -35,7 +35,7 @@
 
     "@profullstack/hqtui": ["@profullstack/hqtui@0.11.1", "", { "bin": { "hqtui": "bin/hqtui.mjs" } }, "sha512-c/UzTmiRDjdLZQEO/gdVinUKtx6Q0WBPdixIm90MBTvC3DqFPqpersRs0BIDPS7XVokCSr1DtELI91kj5J1kCg=="],
 
-    "@profullstack/webhooks": ["@profullstack/webhooks@0.2.0", "", {}, "sha512-lfUoJwN5GmxHzCOphI7fNQAsZ9uiC2C6BZxoPA7MSxM2ryr7MKwOi2YYszwvN6aPaPTRHLhHdqoHQJbkaP9mUg=="],
+    "@profullstack/webhooks": ["@profullstack/webhooks@0.2.1", "", {}, "sha512-QHeSkpu4O44oJ620qhQqxqFlD3u/OhupmXRnBHw4MGKuDTa0R+Y/727nnF7psSHxxSfnbWfNuVl15z3IXuaZiw=="],
 
     "@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
 
