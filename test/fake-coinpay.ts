@@ -1,6 +1,6 @@
 /** CoinPay, faked: OAuth, businesses, wallets, payments. */
 export function fakeCoinPay() {
-  const state = { businesses: [] as any[], accountWallets: [{ cryptocurrency: 'USDC_SOL', wallet_address: 'So1Payout' }] as any[], payments: new Map<string, any>(), refreshes: 0, lastPaymentBody: null as any, sessions: new Map<string, any>(), lastSessionBody: null as any, sessionAuth: [] as string[], invoices: new Map<string, any>(), clients: [] as any[], invoiceAuth: [] as string[], consents: [] as any[] }
+  const state = { businesses: [] as any[], accountWallets: [{ cryptocurrency: 'USDC_SOL', wallet_address: 'So1Payout' }] as any[], payments: new Map<string, any>(), refreshes: 0, lastPaymentBody: null as any, sessions: new Map<string, any>(), lastSessionBody: null as any, sessionAuth: [] as string[], invoices: new Map<string, any>(), clients: [] as any[], invoiceAuth: [] as string[], consents: [] as any[], businessWallets: new Map<string, any[]>(), paypal: true }
   const fetchImpl = (async (url: string | URL, init: RequestInit = {}) => {
     const u = new URL(String(url))
     const method = init.method ?? 'GET'
@@ -25,7 +25,16 @@ export function fakeCoinPay() {
       state.businesses.push(b)
       return json(201, { success: true, business: b })
     }
+    if (path === '/api/wallets' && u.searchParams.get('source') === 'business') return json(200, { success: true, wallets: state.businessWallets.get(u.searchParams.get('business_id') ?? '') ?? [] })
     if (path === '/api/wallets') return json(200, { success: true, wallets: state.accountWallets })
+    const bw = /^\/api\/businesses\/([^/]+)\/wallets$/.exec(path)
+    if (bw && method === 'POST') {
+      const list = state.businessWallets.get(bw[1]!) ?? []
+      if (list.some((w) => w.cryptocurrency === body.cryptocurrency)) return json(400, { success: false, error: 'Wallet for this cryptocurrency already exists' })
+      list.push({ cryptocurrency: body.cryptocurrency, wallet_address: body.wallet_address, business_id: bw[1] })
+      state.businessWallets.set(bw[1]!, list)
+      return json(201, { success: true, wallet: list.at(-1) })
+    }
     if (path === '/api/payments/create') {
       state.lastPaymentBody = body
       const p = { id: `pay${state.payments.size + 1}`, status: 'pending', payment_address: 'So1Deposit', amount_usd: body.amount_usd, amount_crypto: String(body.amount_usd), currency: body.currency, blockchain: 'USDC_SOL', expires_at: '2030-01-01T00:00:00Z' }
@@ -37,7 +46,10 @@ export function fakeCoinPay() {
       state.sessionAuth.push(new Headers(init.headers).get('authorization') ?? '')
       if (!body.business_id) return json(400, { success: false, error: 'business_id is required' })
       const id = `cs_test${state.sessions.size + 1}`
-      const sess = { id, url: `https://cp.test/checkout/${id}`, status: 'open', amount: body.amount, currency: body.currency, property: body.property, methods: ['USDC_SOL', 'BTC', 'PAYPAL'], expires_at: '2030-01-01T00:00:00Z' }
+      const all = ['USDC_SOL', 'BTC', ...(state.paypal ? ['PAYPAL'] : [])]
+      const methods = body.allowed_methods ? all.filter((m) => body.allowed_methods.includes(m)) : all
+      if (!methods.length) return json(400, { success: false, error: 'No payment methods available for this checkout' })
+      const sess = { id, url: `https://cp.test/checkout/${id}`, status: 'open', amount: body.amount, currency: body.currency, property: body.property, methods, expires_at: '2030-01-01T00:00:00Z' }
       state.sessions.set(id, sess)
       return json(201, { success: true, ...sess })
     }

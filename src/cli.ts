@@ -7,6 +7,7 @@
  *   payagent status <payment-id> [--wait]
  *   payagent me                       your link and payments (PAYAGENT_KEY)
  *   payagent claim <handle>           claim a link with no browser (COINPAY_EMAIL + COINPAY_PASSWORD)
+ *   payagent coins [set <a,b>|all] [add-usdc] [recheck]   what your link takes (PAYAGENT_KEY)
  *   payagent invoice <email> <usd> <what for…> [--coin=x] [--due=YYYY-MM-DD] [--repeat=monthly] [--no-email]
  *   payagent invoices                 invoices you sent (PAYAGENT_KEY)
  *   payagent webhooks | webhook add|test|rotate|rm|log   your webhooks (PAYAGENT_KEY)
@@ -30,6 +31,15 @@ export const HELP = `payagent ${VERSION}: get paid, and pay, in crypto (https://
                                     claim your link, or a new key for it, with no
                                     browser: signs in to CoinPay with COINPAY_TOKEN
                                     or COINPAY_EMAIL + COINPAY_PASSWORD
+                                    --coins=usdc_base,usdc_sol,sol,paypal  what it takes
+                                    --no-usdc   skip the USDC default (Base/Polygon/Solana
+                                    at the addresses you already have)
+  payagent coins                    what your link takes, and whether cards are on
+  payagent coins set <coin,coin…|all>
+                                    pick: coin ids, paypal (PayPal and cards), or all
+  payagent coins add-usdc           take USDC on Base, Polygon and Solana at the
+                                    addresses you already have on those chains
+  payagent coins recheck            read your CoinPay wallets again
   payagent invoice <email> <usd> <what for…>
            [--coin=usdc_sol] [--due=2026-11-30] [--repeat=monthly] [--no-email]
                                     send an invoice; CoinPay emails the pay link
@@ -92,7 +102,8 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
       }
       case 'claim': {
         const business = flag('business')
-        const c = await client.claim({ ...(rest[0] ? { handle: rest[0] } : {}), ...(business ? { mode: 'business' as const, businessId: business } : {}) })
+        const coins = flag('coins')
+        const c = await client.claim({ ...(rest[0] ? { handle: rest[0] } : {}), ...(business ? { mode: 'business' as const, businessId: business } : {}), ...(coins ? { coins: coins === 'all' ? 'all' as const : coins.split(',') } : {}), ...(argv.includes('--no-usdc') ? { stablecoins: false } : {}) })
         show(c, `${c.new ? 'Claimed' : 'Signed in as'} ${c.url}${c.coins.length ? `\ntakes: ${c.coins.join(', ')}` : '\nno payout wallet yet: add one in CoinPay'}\n\nYour API key (shown once):\n  export PAYAGENT_KEY=${c.api_key}`)
         return 0
       }
@@ -104,6 +115,25 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
             ? `live until ${(me as { unlocked_until?: string }).unlocked_until}\n`
             : ''
         show(me, `${me.url}\n${lockLine}${me.payments.map((p) => `${p.created_at.slice(0, 16)}  $${p.amount_usd}  ${p.coin}  ${p.status}  ${p.note}`).join('\n') || 'no payments yet'}`)
+        return 0
+      }
+      case 'coins': {
+        const [sub, list] = rest
+        const r = sub === 'set'
+          ? await client.setCoins({ coins: !list || list === 'all' ? 'all' : list.split(',') })
+          : sub === 'add-usdc'
+            ? await client.setCoins({ addStablecoins: true })
+            : sub === 'recheck'
+              ? await client.setCoins({ recheck: true })
+              : await client.coins()
+        show(r, [
+          `takes: ${r.coins.join(', ') || 'nothing yet'}${r.card ? ' + cards/PayPal' : ''}`,
+          `has a wallet for: ${r.payable.join(', ') || 'nothing'}`,
+          `your pick: ${Array.isArray(r.accepts) ? r.accepts.join(', ') : r.accepts}`,
+          `cards: ${r.card ? 'on (PayPal guest checkout)' : r.card === false ? `off: connect PayPal to your CoinPay business (${r.cards})` : `not seen yet (${r.cards})`}`,
+          ...(r.note ? [r.note] : []),
+          ...(r.add_stablecoins && sub !== 'add-usdc' ? ['payagent coins add-usdc: USDC on Base/Polygon/Solana at your existing addresses'] : []),
+        ].join('\n'))
         return 0
       }
       case 'lock': {

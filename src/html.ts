@@ -10,7 +10,7 @@ import type { InvoiceRow, PaymentRow, User } from './db.js'
 import { pitFooter } from './pit-footer.js'
 import { ringFooter } from './ring-footer.js'
 import { RING_PLACEHOLDER } from './ring.js'
-import { coinName, PAID, RECURRENCES, WEBHOOK_EVENTS, type InvoiceLive } from './service.js'
+import { coinName, DEFAULT_STABLES, offered, PAID, PAYPAL, RECURRENCES, WEBHOOK_EVENTS, type InvoiceLive } from './service.js'
 
 export const SITE = 'https://pay.agent'
 export const REPO = 'https://github.com/moshcoder/pay.agent'
@@ -135,7 +135,12 @@ export function helpPage(ctx: Ctx): string {
 </ol></div>
 <div class="card"><h2>Paying someone</h2><p>Open their link, enter an amount in dollars and your email (CoinPay sends the receipt there), and continue to CoinPay's checkout. Pick any coin they take, or PayPal when they connected it, and pay. CoinPay brings you back to pay.agent, and the page turns green when the payment lands. A checkout is open for one hour.</p></div>
 <div class="card"><h2>Fees</h2><p>pay.agent adds no fee. CoinPay takes its normal fee when it forwards the payment to you, and the payer pays their own network fee.</p></div>
-<div class="card"><h2>Coins</h2><p class="small">${coins}</p><p class="muted small">A link only offers coins its owner has a payout address for.</p></div>
+<div class="card"><h2>Coins</h2><p class="small">${coins}</p><p class="muted small">A link only offers coins its owner has a payout address for. New links also take USDC on Base, Polygon and Solana at an address the owner already has on that chain (an 0x address, or a Solana address); untick it at setup if that address is an exchange deposit address. Pick what your link takes on <a href="/me#takes">My link</a> or with <code>PUT /api/v1/me/coins</code>.</p></div>
+<div class="card" id="cards"><h2>Cards</h2><p>Cards go through PayPal on CoinPay's checkout: a payer picks PayPal and pays by debit or credit card as a guest, no PayPal account needed. pay.agent never uses Stripe.</p>
+<ol><li>You need a PayPal Business account and a REST app (developer.paypal.com, Apps &amp; Credentials, Live). PayPal verifies who holds it.</li>
+<li>Connect it to the CoinPay business your link pays (<code>pay.agent/yourname</code> in wallet mode): CoinPay dashboard, Business, PayPal. With no browser: <code>POST https://coinpayportal.com/api/paypal/connect</code> with your CoinPay session (<code>authorization: Bearer</code> from <code>/api/auth/login</code>) and <code>{"business_id": "…", "client_id": "…", "client_secret": "…"}</code>. pay.agent cannot do this step for you: its CoinPay access can never touch PayPal settings.</li>
+<li>Your next checkout shows PayPal and cards, and your link says so (<code>"card": true</code> in the API).</li></ol>
+<p class="muted small">Card money lands in your PayPal account, not your crypto wallet. Business id: <code>GET /api/v1/me/coins</code>.</p></div>
 <div class="card" id="agents"><h2>Agents, API, CLI, MCP</h2>
 <p>Every link is an API, no key needed to pay someone:</p>
 <pre>GET  /api/v1/users/:handle                 who, and which coins
@@ -144,7 +149,12 @@ POST /api/v1/users/:handle/payments        {"amount_usd": 5, "payer_email": "me@
                                            open checkout_url (CoinPay) to pay in any coin they take, or PayPal
 GET  /api/v1/payments/:id                  status: pending, confirmed, forwarded, completed (PayPal), expired</pre>
 <p>Your own payments, with the API key from <a href="/me">My link</a>:</p>
-<pre>GET  /api/v1/me                            -H 'authorization: Bearer pa_…'</pre>
+<pre>GET  /api/v1/me                            -H 'authorization: Bearer pa_…'
+GET  /api/v1/me/coins                      payable (has a wallet), accepts (your pick), coins + card (what payers see)
+PUT  /api/v1/me/coins                      {"coins": ["usdc_base", "usdc_sol", "sol", "paypal"]} or {"coins": "all"}
+                                           {"add_stablecoins": true}: USDC on Base/Polygon/Solana at your existing addresses
+                                           {"recheck": true}: read your CoinPay wallets again</pre>
+<p>Claiming with no browser takes the same choices: <code>POST /api/v1/claim</code> with <code>"coins"</code> and <code>"stablecoins": false</code> to skip the USDC default.</p>
 <p id="webhooks">Webhooks: pay.agent POSTs ${WEBHOOK_EVENTS.map((e) => `<code>${esc(e)}</code>`).join(', ')} for your link to your URL, as signed CloudEvents (<a href="https://www.standardwebhooks.com/">Standard Webhooks</a>, via <code>@profullstack/webhooks</code>), retried for about three days. Add one on <a href="/me#webhooks">My link</a> or with your key:</p>
 <pre>GET    /api/v1/webhooks                    your endpoints and the event types
 POST   /api/v1/webhooks                    {"url": "https://example.com/hook", "events": ["payment.*"]} -> {endpoint, secret}
@@ -202,6 +212,7 @@ ${o.coinpayError ? `<p class="note">${esc(o.coinpayError)}</p>` : ''}
     </div>
     <p class="muted small">Or <a href="${COINPAY}/web-wallet" target="_blank" rel="noopener">make a CoinPay wallet</a>, then come back and press the button.</p>
   </details>
+  <label class="choice" style="margin-top:1rem"><input type="checkbox" name="stablecoins" ${v.stablecoins === undefined || v.stablecoins === 'on' ? 'checked' : ''}><span><b>Also take USDC</b><span class="muted">On Base, Polygon and Solana, at the address you already have on that chain. Leave it off if that address is an exchange deposit address.</span></span></label>
   <p style="margin-top:1.4rem"><button class="btn wide big">Make my link</button></p>
 </form>`,
   })
@@ -237,6 +248,8 @@ export function dashboardPage(ctx: Ctx, o: { user: User; payments: PaymentRow[];
   const invoices = o.invoices ?? []
   const u = o.user
   const received = o.payments.filter((p) => PAID.has(p.status)).reduce((sum, p) => sum + p.amountUsd, 0)
+  const now = offered(u)
+  const missingStables = DEFAULT_STABLES.filter((c) => !u.coins.includes(c))
   return layout({
     ctx,
     noindex: true,
@@ -247,9 +260,16 @@ export function dashboardPage(ctx: Ctx, o: { user: User; payments: PaymentRow[];
     body: `<section class="hero" style="padding-bottom:1rem"><h1>Hi${u.name ? `, ${esc(u.name.split(' ')[0])}` : ''}.</h1><p class="tag">${received ? `${usd(received)} received through your link so far.` : 'Share your link to get paid.'}</p></section>
 ${o.flash ? `<p class="note">${esc(o.flash)}</p>` : ''}
 <div class="card center" id="coins">${linkBox(ctx.origin, u.handle!)}${o.qr}
-<p class="muted small">Takes ${u.coins.length ? esc(u.coins.map(coinName).join(', ')) : '<b>nothing yet: add a payout address</b>'} · pays ${u.mode === 'business' ? `your business <b>${esc(u.businessName)}</b>` : 'your CoinPay wallet'}</p>
+<p class="muted small">Takes ${now.coins.length ? esc(now.coins.map(coinName).join(', ')) : '<b>nothing yet: add a payout address</b>'}${now.card ? ', and cards or PayPal' : ''} · pays ${u.mode === 'business' ? `your business <b>${esc(u.businessName)}</b>` : 'your CoinPay wallet'}</p>
 <form method="post" action="/me/recheck#coins"><input type="hidden" name="csrf" value="${esc(ctx.csrf)}"><button class="copy">Re-check coins</button></form>
 ${o.coinsNote ? `<p class="note" role="status">${esc(o.coinsNote)}</p>` : ''}</div>
+<div class="card" id="takes"><h2>What your link takes</h2>
+<form method="post" action="/me/coins#takes">${csrf}
+<label class="small"><input type="checkbox" name="all" ${u.accepts ? '' : 'checked'}> Everything I have a wallet for (new wallets too)</label>
+<p class="small">${[...u.coins, PAYPAL].map((c) => `<label style="display:inline-block;margin-right:1rem"><input type="checkbox" name="take_${esc(c)}" ${!u.accepts || u.accepts.includes(c) ? 'checked' : ''}> ${esc(c === PAYPAL ? 'PayPal and cards' : coinName(c))}</label>`).join('')}</p>
+<button class="copy">Save</button></form>
+${missingStables.length ? `<form method="post" action="/me/stablecoins#coins">${csrf}<p class="muted small">Take ${esc(missingStables.map(coinName).join(', '))} too, at the address you already have on that chain (self-custody wallets only, not an exchange deposit address).</p><button class="copy">Add USDC</button></form>` : ''}
+<p class="muted small" id="cards">${now.card ? 'Cards are on: payers can pick PayPal on the checkout and pay by card as a guest.' : `Cards: connect PayPal to your CoinPay business <b>${esc(u.businessName ?? '')}</b> (CoinPay, Business, PayPal). Payers then pay by card through PayPal's guest checkout. <a href="/help#cards">How</a>`}</p></div>
 ${o.access ? accessCard(ctx, o.access) : ''}
 <div class="card"><h2>Ask for an amount</h2><p class="muted small">A link with the amount filled in.</p>
 <form method="get" action="/${esc(u.handle)}" class="row"><input name="amount" inputmode="decimal" placeholder="Amount (USD)"><input name="note" maxlength="140" placeholder="What for (optional)"><button class="btn">Make link</button></form></div>
@@ -308,7 +328,7 @@ export function payPage(ctx: Ctx, o: { payee: User; amount?: string; note?: stri
   return layout({
     ctx,
     title: `Pay ${p.name || p.handle} · pay.agent`,
-    description: `Pay ${p.name || p.handle} in crypto${p.coins.length ? `: ${p.coins.map(coinName).join(', ')}` : ''}, through CoinPay.`,
+    description: `Pay ${p.name || p.handle}${offered(p).card ? ' by card, PayPal or crypto' : ' in crypto'}${offered(p).coins.length ? `: ${offered(p).coins.map(coinName).join(', ')}` : ''}, through CoinPay.`,
     path: `/${p.handle}`,
     body: `<section class="payee"><div class="avatar" aria-hidden="true">${esc(initial)}</div><h1>${esc(p.name || p.handle)}</h1><p class="muted">pay.agent/${esc(p.handle)}</p></section>
 ${o.paused && !o.error ? `<p class="note error">This pay link is paused until its owner signs in to pay.agent again.</p>` : ''}${o.error ? `<p class="note error">${esc(o.error)}</p>` : ''}
@@ -323,7 +343,7 @@ ${o.paused && !o.error ? `<p class="note error">This pay link is paused until it
   <input id="payer" name="payer" maxlength="60" value="${esc(o.payer ?? '')}">
   <input class="hp" name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true">
   <p style="margin-top:1.2rem"><button class="btn wide big">Continue to pay</button></p>
-  <p class="muted small center">You pick the coin (or PayPal, when ${esc(p.name || p.handle)} takes it) on CoinPay's secure checkout.</p>
+  <p class="muted small center">${offered(p).card ? 'Pay by card or PayPal, or pick a coin, on CoinPay\'s secure checkout.' : `You pick the coin (or PayPal, when ${esc(p.name || p.handle)} takes it) on CoinPay's secure checkout.`}</p>
 </form>
 <p class="center muted small">Want your own? <a href="/">Get a pay link</a></p>`,
   })

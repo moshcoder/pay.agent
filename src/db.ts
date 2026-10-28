@@ -24,7 +24,15 @@ export type User = {
   mode: Mode | null
   businessId: string | null
   businessName: string | null
+  /** What CoinPay can pay this link in: coins with a payout wallet. */
   coins: string[]
+  /**
+   * What the owner chose to take (coin ids, and `paypal` for PayPal and cards
+   * through PayPal); null takes everything CoinPay can.
+   */
+  accepts: string[] | null
+  /** Whether the business has PayPal (so cards) on CoinPay, as its last checkout showed; null until one did. */
+  card: boolean | null
   apiKeyHash: string | null
   createdAt: number
 }
@@ -173,6 +181,9 @@ export class Store {
     const userCols = new Set((this.db.query('PRAGMA table_info(users)').all() as { name: string }[]).map((c) => c.name))
     if (!userCols.has('tokens_sealed')) this.db.exec('ALTER TABLE users ADD COLUMN tokens_sealed TEXT')
     if (!userCols.has('seal_version')) this.db.exec('ALTER TABLE users ADD COLUMN seal_version INTEGER NOT NULL DEFAULT 0')
+    // Owner-chosen methods and card (0.7.0).
+    if (!userCols.has('accepts')) this.db.exec('ALTER TABLE users ADD COLUMN accepts TEXT')
+    if (!userCols.has('card')) this.db.exec('ALTER TABLE users ADD COLUMN card INTEGER')
   }
 
   private toUser(row: any): User | null {
@@ -186,6 +197,8 @@ export class Store {
       businessId: row.business_id,
       businessName: row.business_name,
       coins: JSON.parse(row.coins || '[]'),
+      accepts: row.accepts ? JSON.parse(row.accepts) : null,
+      card: row.card === null || row.card === undefined ? null : Boolean(row.card),
       apiKeyHash: row.api_key_hash,
       createdAt: row.created_at,
     }
@@ -232,6 +245,15 @@ export class Store {
 
   setCoins(sub: string, coins: string[]): void {
     this.db.query('UPDATE users SET coins = ? WHERE sub = ?').run(JSON.stringify(coins), sub)
+  }
+
+  /** null: take everything CoinPay can. */
+  setAccepts(sub: string, accepts: string[] | null): void {
+    this.db.query('UPDATE users SET accepts = ? WHERE sub = ?').run(accepts ? JSON.stringify(accepts) : null, sub)
+  }
+
+  setCard(sub: string, card: boolean): void {
+    this.db.query('UPDATE users SET card = ? WHERE sub = ?').run(card ? 1 : 0, sub)
   }
 
   setApiKey(sub: string, key: string): void {

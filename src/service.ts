@@ -41,6 +41,55 @@ export class SetupError extends Error {
   }
 }
 
+/** PayPal on a CoinPay checkout: PayPal accounts, and cards through PayPal's guest checkout. */
+export const PAYPAL = 'paypal'
+
+/** What a new link takes besides the owner's own coins: USDC where they already have an address on that chain. */
+export const DEFAULT_STABLES = ['usdc_base', 'usdc_pol', 'usdc_sol']
+
+const EVM_CODES = new Set(['ETH', 'POL', 'BNB', 'USDC', 'USDT', 'USDC_ETH', 'USDC_BASE', 'USDC_POL', 'USDT_ETH', 'USDT_POL'])
+const SOLANA_CODES = new Set(['SOL', 'USDC_SOL', 'USDT_SOL'])
+const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/
+const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/
+
+/**
+ * USDC a set of payout wallets could also take at an address it already has:
+ * an EVM address takes USDC on Base, Polygon and Ethereum, a Solana address
+ * takes USDC on Solana. Only for self-custody wallets: an exchange deposit
+ * address may not credit a token or chain it was not made for.
+ */
+export function sameAddressStables(wallets: { cryptocurrency?: string; address: string }[], want: string[] = DEFAULT_STABLES): Record<string, string> {
+  const code = (w: { cryptocurrency?: string }) => String(w.cryptocurrency ?? '').toUpperCase()
+  const have = new Set(wallets.map(code))
+  const evm = wallets.find((w) => EVM_CODES.has(code(w)) && EVM_ADDRESS.test(w.address.trim()))?.address.trim()
+  const sol = wallets.find((w) => SOLANA_CODES.has(code(w)) && SOLANA_ADDRESS.test(w.address.trim()))?.address.trim()
+  const out: Record<string, string> = {}
+  for (const id of want) {
+    const coin = COINS.find((c) => c.id === id)
+    if (!coin || have.has(walletCode(id))) continue
+    const address = coin.chain === 'SOL' ? sol : ['BASE', 'POL', 'ETH'].includes(coin.chain) ? evm : undefined
+    if (address) out[id] = address
+  }
+  return out
+}
+
+/** The owner's choice as stored: known coin ids and paypal, deduped; 'all' (or nothing) is null. */
+export function parseAccepts(input: unknown): string[] | null {
+  if (input === null || input === undefined || input === 'all' || (Array.isArray(input) && input.length === 1 && input[0] === 'all')) return null
+  const list = (Array.isArray(input) ? input : String(input).split(/[\s,]+/)).map((c) => String(c).trim().toLowerCase()).filter(Boolean)
+  if (list.includes('card')) list.splice(list.indexOf('card'), 1, PAYPAL)
+  const unknown = list.filter((c) => c !== PAYPAL && !COINS.some((k) => k.id === c))
+  if (unknown.length) throw new SetupError(`Unknown coin${unknown.length === 1 ? '' : 's'}: ${unknown.join(', ')}. Use ${COINS.map((c) => c.id).join(', ')}, paypal (cards go through PayPal), or all.`, 'coins')
+  if (!list.length) throw new SetupError('Pick at least one coin, or all.', 'coins')
+  return [...new Set(list)]
+}
+
+/** What a link offers payers now: the coins it can be paid in that its owner takes, and whether cards (PayPal) are on. */
+export function offered(u: Pick<User, 'coins' | 'accepts' | 'card'>): { coins: string[]; card: boolean | null } {
+  const coins = u.accepts ? u.coins.filter((c) => u.accepts!.includes(c)) : u.coins
+  return { coins, card: !u.accepts || u.accepts.includes(PAYPAL) ? u.card : false }
+}
+
 const MIN_USD = 0.5
 const MAX_USD = 10_000
 
@@ -195,7 +244,8 @@ export class PayAgent {
    * pay.agent business that pays out to their CoinPay wallet, or use a
    * business they already have. Payout addresses they typed are added first.
    */
-  async setup(user: User, input: { handle: string; mode: Mode; businessId?: string; addresses?: Record<string, string> }): Promise<{ steps: OnboardStep[]; coins: string[] }> {
+  async setup(user: User, input: { handle: string; mode: Mode; businessId?: string; addresses?: Record<string, string>; accepts?: string[] | null; stablecoins?: boolean }): Promise<{ steps: OnboardStep[]; coins: string[] }> {
+    const accepts = input.accepts === undefined ? null : input.accepts
     const handle = input.handle.trim().toLowerCase().replace(/^@/, '')
     const problem = validHandle(handle)
     if (problem) throw new SetupError(problem, 'handle')
@@ -209,9 +259,12 @@ export class PayAgent {
       // Their business, their webhook: we never repoint it. Payments are
       // followed by asking CoinPay instead.
       const r = await onboard(client, { businessName: business.name, addresses, importWallets: Object.keys(addresses).length > 0 })
-      const coins = sortCoins(r.coins.filter((c) => COINS.some((k) => k.id === c)))
+      // Their own business is theirs to change: USDC is added to it only when they ask.
+      const steps = input.stablecoins === true ? [...r.steps, ...(await this.addStables(client, business.id))] : r.steps
+      const coins = input.stablecoins === true ? sortCoins(payableCoins(await payableBy(client, business.id))) : sortCoins(r.coins.filter((c) => COINS.some((k) => k.id === c)))
       this.store.setup(user.sub, { handle, mode: 'business', businessId: business.id, businessName: business.name, coins, webhookSecret: null })
-      return { steps: r.steps, coins }
+      this.store.setAccepts(user.sub, accepts)
+      return { steps, coins }
     }
 
     const name = `pay.agent/${handle}`
@@ -225,9 +278,46 @@ export class PayAgent {
       // falls back to them when the business has none of its own.
       importWallets: false,
     })
-    const coins = sortCoins(r.coins.filter((c) => COINS.some((k) => k.id === c)))
+    // New links take USDC on Base, Polygon and Solana too wherever the owner
+    // already has an address on that chain (on the pay.agent business only).
+    const steps = input.stablecoins === false ? r.steps : [...r.steps, ...(await this.addStables(client, r.business.id))]
+    const coins = input.stablecoins === false ? sortCoins(r.coins.filter((c) => COINS.some((k) => k.id === c))) : sortCoins(payableCoins(await payableBy(client, r.business.id)))
     this.store.setup(user.sub, { handle, mode: 'wallet', businessId: r.business.id, businessName: r.business.name, coins, webhookSecret: r.webhookSecret })
-    return { steps: r.steps, coins }
+    this.store.setAccepts(user.sub, accepts)
+    return { steps, coins }
+  }
+
+  /** Adds the USDC the business's wallets can take at addresses they already have, as wallets of that business. */
+  private async addStables(client: CoinPay, businessId: string): Promise<OnboardStep[]> {
+    const [account, business] = await Promise.all([client.wallets('account').catch(() => []), client.wallets('business', businessId).catch(() => [])])
+    const add = sameAddressStables([...business, ...account])
+    const steps: OnboardStep[] = []
+    for (const [coin, address] of Object.entries(add)) {
+      try {
+        await client.call('POST', `/api/businesses/${encodeURIComponent(businessId)}/wallets`, { cryptocurrency: walletCode(coin), wallet_address: address, is_active: true })
+        steps.push({ step: `wallet:${coin}`, ok: true, detail: `${coinName(coin)} goes to ${address.slice(0, 6)}…${address.slice(-4)}, the address you already have on that chain` })
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        steps.push({ step: `wallet:${coin}`, ok: /exist|already|duplicate/i.test(message), detail: message })
+      }
+    }
+    return steps
+  }
+
+  /** USDC at the owner's existing addresses (Base, Polygon, Solana), then a re-check. */
+  async addStablecoins(user: User): Promise<{ steps: OnboardStep[]; coins: string[] }> {
+    if (!user.businessId) throw new SetupError('Make your link first.')
+    const client = await this.clientFor(user.sub)
+    const steps = await this.addStables(client, user.businessId)
+    return { steps, coins: await this.recheck(user) }
+  }
+
+  /** The owner picks what the link takes: coin ids and paypal, or null for everything CoinPay can. */
+  setAccepts(user: User, input: unknown): { accepts: string[] | null; offered: { coins: string[]; card: boolean | null }; unavailable: string[] } {
+    const accepts = parseAccepts(input)
+    this.store.setAccepts(user.sub, accepts)
+    const u = this.store.user(user.sub)!
+    return { accepts, offered: offered(u), unavailable: (accepts ?? []).filter((c) => c !== PAYPAL && !u.coins.includes(c)) }
   }
 
   /** What a re-check found, in words: what changed, and what a new wallet would add. */
@@ -274,8 +364,13 @@ export class PayAgent {
     const payer = clean(input.payer, 60)
     const id = `pl_${randomBytes(12).toString('hex')}`
     const origin = input.origin.replace(/\/+$/, '')
+    // The owner's choice, as CoinPay method codes; none set offers everything.
+    const takes = offered(payee)
+    const allowedMethods = payee.accepts ? [...takes.coins.map(walletCode), ...(payee.accepts.includes(PAYPAL) ? ['PAYPAL'] : [])] : undefined
+    if (allowedMethods && !allowedMethods.length) throw new SetupError('This link takes nothing right now: its owner has no wallet for the coins they picked.')
     const client = await this.clientFor(payee.sub)
     const session: CheckoutSession = await client.createCheckoutSession({
+      ...(allowedMethods ? { allowedMethods } : {}),
       businessId: payee.businessId,
       amount,
       currency: 'USD',
@@ -289,6 +384,11 @@ export class PayAgent {
       expiresInMinutes: 60,
       idempotencyKey: randomBytes(16).toString('hex'),
     })
+    // Whether cards work is only visible on a checkout: PayPal is there when the business connected it.
+    if (!payee.accepts || payee.accepts.includes(PAYPAL)) {
+      const card = session.methods.some((m) => m.toUpperCase() === 'PAYPAL')
+      if (card !== payee.card) this.store.setCard(payee.sub, card)
+    }
     this.store.addPayment({
       id,
       handle: payee.handle,

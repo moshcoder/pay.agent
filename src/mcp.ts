@@ -41,6 +41,16 @@ export function createMcpServer(client = new PayAgentClient()): McpServer {
       try { return text(await client.claim({ ...(handle ? { handle } : {}), ...(business_id ? { mode: 'business' as const, businessId: business_id } : {}) })) } catch (e) { return failure(e) }
     },
   )
+  server.tool(
+    'my_coins',
+    'What your pay.agent link takes (needs PAYAGENT_KEY): coins payers can use, card (PayPal and cards on the checkout), payable (coins with a CoinPay wallet) and accepts (your pick). Set coins (ids like usdc_base, usdc_sol, sol, or paypal, or "all") to choose; add_stablecoins adds USDC on Base, Polygon and Solana at addresses you already have.',
+    { coins: z.union([z.array(z.string()), z.literal('all')]).optional(), add_stablecoins: z.boolean().optional(), recheck: z.boolean().optional() },
+    async ({ coins, add_stablecoins, recheck }: { coins?: string[] | 'all'; add_stablecoins?: boolean; recheck?: boolean }) => {
+      try {
+        return text(coins || add_stablecoins || recheck ? await client.setCoins({ ...(coins ? { coins } : {}), ...(add_stablecoins ? { addStablecoins: true } : {}), ...(recheck ? { recheck: true } : {}) }) : await client.coins())
+      } catch (e) { return failure(e) }
+    },
+  )
   server.tool('my_payments', 'Your own pay.agent link and the payments made to it (needs PAYAGENT_KEY).', {}, async () => {
     try { return text(await client.me()) } catch (e) { return failure(e) }
   })
