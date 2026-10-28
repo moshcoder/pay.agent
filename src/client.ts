@@ -23,6 +23,8 @@ export type ApiInvoice = {
   warning?: string
 }
 export type InvoiceRequest = { to_email: string; to_name?: string; description: string; amount_usd: number; coin?: string; due_date?: string; recurrence?: string; email?: boolean }
+export type ApiWebhook = { id: string; url: string; events: string[]; description: string; enabled: boolean; failures: number; disabled_reason: string | null; created_at: string; updated_at: string }
+export type ApiDelivery = { id: string; endpoint_id: string; event_id: string; event_type: string; status: string; attempts: number; next_at: string | null; last_status: number | null; last_error: string | null; created_at: string; updated_at: string; payload?: unknown }
 export type ApiUser = { handle: string; name: string; coins: string[]; url: string }
 export type ClaimOptions = { handle?: string; mode?: 'wallet' | 'business'; businessId?: string; coinpayToken?: string; coinpayEmail?: string; coinpayPassword?: string; coinpayBase?: string }
 export type ApiClaim = ApiUser & { mode: string | null; api_key: string; steps: unknown[]; new: boolean }
@@ -114,6 +116,37 @@ export class PayAgentClient {
 
   invoiceStatus(id: string): Promise<ApiInvoice> {
     return this.call('GET', `/api/v1/invoices/${encodeURIComponent(id)}`)
+  }
+
+  private keyed<T>(method: string, path: string, body?: unknown): Promise<T> {
+    if (!this.key) return Promise.reject(new ApiError('Set PAYAGENT_KEY to your key from pay.agent/me', 401))
+    return this.call(method, path, body, true)
+  }
+
+  /** Your webhook endpoints, and the events pay.agent sends. */
+  webhooks(): Promise<{ endpoints: ApiWebhook[]; event_types: string[] }> {
+    return this.keyed('GET', '/api/v1/webhooks')
+  }
+
+  /** POST your link's events to `url` (Standard Webhooks). The signing secret comes back once here. */
+  addWebhook(url: string, events?: string[], description = ''): Promise<{ endpoint: ApiWebhook; secret: string }> {
+    return this.keyed('POST', '/api/v1/webhooks', { url, ...(events?.length ? { events } : {}), description })
+  }
+
+  removeWebhook(id: string): Promise<{ deleted: true }> {
+    return this.keyed('DELETE', `/api/v1/webhooks/${encodeURIComponent(id)}`)
+  }
+
+  testWebhook(id: string): Promise<{ ok: boolean; status: number | null; error: string | null; delivery_id: string }> {
+    return this.keyed('POST', `/api/v1/webhooks/${encodeURIComponent(id)}/test`)
+  }
+
+  rotateWebhook(id: string): Promise<{ secret: string }> {
+    return this.keyed('POST', `/api/v1/webhooks/${encodeURIComponent(id)}/rotate`)
+  }
+
+  webhookLog(id?: string): Promise<{ deliveries: ApiDelivery[] }> {
+    return this.keyed('GET', id ? `/api/v1/webhooks/${encodeURIComponent(id)}/deliveries` : '/api/v1/webhooks/deliveries')
   }
 }
 

@@ -104,7 +104,7 @@ export const hashKey = (key: string) => createHash('sha256').update(key).digest(
 
 export class Store {
   readonly db: Database
-  constructor(path: string, private readonly sealer: Sealer) {
+  constructor(path: string, readonly sealer: Sealer) {
     this.db = new Database(path, { create: true })
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;')
     this.db.exec(`

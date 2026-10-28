@@ -12,6 +12,7 @@ import { Hono, type Context } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import QRCode from 'qrcode'
 import { verifyWebhook } from '@profullstack/coinpay-onboard'
+import { webhooksApi, WebhookError } from '@profullstack/webhooks'
 import { authorizeUrl, exchangeCode, pkce } from '@profullstack/coinpay-onboard/oauth'
 import { CoinPay } from '@profullstack/coinpay-onboard'
 import { Sealer, Store, type User } from './db.js'
@@ -37,7 +38,7 @@ const SECURITY_HEADERS: Record<string, string> = {
   'cross-origin-opener-policy': 'same-origin',
 }
 
-export type Deps = { store: Store; config: Config; key: string; publicDir?: string; secureCookies?: boolean }
+export type Deps = { store: Store; config: Config; key: string; publicDir?: string; secureCookies?: boolean; agent?: PayAgent }
 
 type Env = { Bindings: { ip?: string } }
 
@@ -64,10 +65,11 @@ async function qrSvg(text: string): Promise<string> {
 
 export function createApp(deps: Deps) {
   const { store, config } = deps
-  const agent = new PayAgent(store, config)
+  const agent = deps.agent ?? new PayAgent(store, config)
   const app = new Hono<Env>()
   const payLimit = new Limiter(20, 10 * 60_000)
   const authLimit = new Limiter(30, 10 * 60_000)
+  const hookLimit = new Limiter(30, 10 * 60_000)
 
   const direct = (c: Context) => visitorOnMoshpit(SELF, c.req.header('host'), c.req.header('x-moshpit-name'))
   // nginx serves the Moshpit name on port 80 too, for clients that cannot check its certificate.
@@ -196,12 +198,13 @@ export function createApp(deps: Deps) {
   })
 
   // The owner's page.
-  const dashboard = async (c: Context, extra: { apiKey?: string; flash?: string; coinsNote?: string; invoiceForm?: Record<string, string> } = {}) => {
+  const dashboard = async (c: Context, extra: { apiKey?: string; flash?: string; coinsNote?: string; invoiceForm?: Record<string, string>; webhookSecret?: string; webhookNote?: string } = {}, status = 200) => {
     const ctx = ctxOf(c)
     const user = ctx.user!
     if (!user.handle) return c.redirect('/start')
     const qr = await qrSvg(`${ctx.origin}/${user.handle}`)
-    return page(c, dashboardPage(ctx, { user, payments: store.payments(user.handle), invoices: store.invoices(user.handle), qr, ...extra }))
+    const webhooks = await agent.hooks.listEndpoints(user.sub)
+    return page(c, dashboardPage(ctx, { user, payments: store.payments(user.handle), invoices: store.invoices(user.handle), qr, webhooks, ...extra }), status)
   }
 
   app.get('/me', async (c) => (userOf(c) ? dashboard(c) : c.redirect('/auth/start')))
@@ -226,11 +229,37 @@ export function createApp(deps: Deps) {
         return dashboard(c, { apiKey: key })
       }
       case 'delete':
-        store.deleteUser(user.sub)
+        await agent.forget(user.sub)
         deleteCookie(c, SESSION, { path: '/' })
         return c.redirect('/')
     }
     return c.redirect('/me')
+  })
+
+  // Webhooks from the owner's page: add, test, rotate, remove. /api/v1/webhooks does the same with a key.
+  app.post('/me/webhooks/:action{(add|test|rotate|delete)}', async (c) => {
+    const user = userOf(c)
+    if (!user) return c.redirect('/auth/start')
+    const form = (await c.req.parseBody()) as Record<string, string>
+    if (!csrfOk(c, form.csrf)) return dashboard(c, { webhookNote: 'That form went stale. Try again.' }, 400)
+    if (!hookLimit.allow(`wh:${user.sub}`)) return dashboard(c, { webhookNote: 'Too many changes. Wait a few minutes.' }, 429)
+    try {
+      const action = c.req.param('action')
+      if (action === 'add') {
+        const r = await agent.hooks.createEndpoint(user.sub, { url: form.url ?? '', ...(form.events?.trim() ? { events: form.events } : {}), description: form.description ?? '' })
+        return dashboard(c, { webhookNote: 'Webhook added. Copy its signing secret now: it is shown once here (the API and CLI can show it again).', webhookSecret: r.secret })
+      }
+      const id = form.id ?? ''
+      if (action === 'test') {
+        const r = await agent.hooks.test(user.sub, id)
+        return dashboard(c, { webhookNote: r.ok ? `Test delivered (HTTP ${r.status}).` : `Test failed: ${r.error ?? `HTTP ${r.status}`}` })
+      }
+      if (action === 'rotate') return dashboard(c, { webhookNote: 'New signing secret below; the old one has stopped working.', webhookSecret: (await agent.hooks.rotateSecret(user.sub, id)).secret })
+      await agent.hooks.deleteEndpoint(user.sub, id)
+      return dashboard(c, { webhookNote: 'Webhook removed.' })
+    } catch (e) {
+      return dashboard(c, { webhookNote: e instanceof Error ? e.message : String(e) }, e instanceof WebhookError ? (e.status as 400) : 500)
+    }
   })
 
   // An invoice from the owner's page.
@@ -309,6 +338,18 @@ export function createApp(deps: Deps) {
     return u?.handle ? u : null
   }
   const NO_KEY = { error: 'send your API key: authorization: Bearer pa_…' }
+
+  // Customer webhooks: the @profullstack/webhooks API, scoped to the key's account.
+  const hookOwner = new WeakMap<Request, string>()
+  const hooksApi = webhooksApi(agent.hooks, { basePath: '/api/v1/webhooks', owner: (req) => hookOwner.get(req) })
+  const webhooksRoute = async (c: Context) => {
+    const u = keyUser(c)
+    if (!u) return c.json(NO_KEY, 401)
+    hookOwner.set(c.req.raw, u.sub)
+    return (await hooksApi(c.req.raw)) ?? c.json({ error: 'not found' }, 404)
+  }
+  app.all('/api/v1/webhooks', webhooksRoute)
+  app.all('/api/v1/webhooks/*', webhooksRoute)
 
   app.get('/api/v1/me', (c) => {
     const u = keyUser(c)
@@ -503,17 +544,17 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
   const key = env.PAYAGENT_KEY ?? ''
   const store = new Store(env.PAYAGENT_DB ?? `${env.HOME}/.local/share/pay-agent/pay-agent.db`, new Sealer(key))
   if (!env.PAYAGENT_COINPAY_CLIENT_ID) throw new Error('PAYAGENT_COINPAY_CLIENT_ID must be set (the CoinPay OAuth client)')
-  const app = createApp({
-    store,
-    key,
-    config: {
-      coinpayBase: env.COINPAY_BASE ?? 'https://coinpayportal.com',
-      clientId: env.PAYAGENT_COINPAY_CLIENT_ID,
-      ...(env.PAYAGENT_COINPAY_CLIENT_SECRET ? { clientSecret: env.PAYAGENT_COINPAY_CLIENT_SECRET } : {}),
-      // CoinPay's servers are on the public DNS: they reach us through the relay.
-      webhookOrigin: env.PAYAGENT_WEBHOOK_ORIGIN ?? RELAY_ORIGIN,
-    },
-  })
+  const config: Config = {
+    coinpayBase: env.COINPAY_BASE ?? 'https://coinpayportal.com',
+    clientId: env.PAYAGENT_COINPAY_CLIENT_ID,
+    ...(env.PAYAGENT_COINPAY_CLIENT_SECRET ? { clientSecret: env.PAYAGENT_COINPAY_CLIENT_SECRET } : {}),
+    // CoinPay's servers are on the public DNS: they reach us through the relay.
+    webhookOrigin: env.PAYAGENT_WEBHOOK_ORIGIN ?? RELAY_ORIGIN,
+  }
+  const agent = new PayAgent(store, config)
+  const app = createApp({ store, key, config, agent })
+  // Customer webhooks: deliveries waiting from before the restart go out now, then every 5 s.
+  agent.hooks.start()
   const trustProxy = (env.PAYAGENT_TRUST_PROXY ?? '1') === '1'
   startRingRefresh()
   startPitFooterRefresh('pay.agent')

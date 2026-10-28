@@ -9,6 +9,7 @@
  *   payagent claim <handle>           claim a link with no browser (COINPAY_EMAIL + COINPAY_PASSWORD)
  *   payagent invoice <email> <usd> <what for…> [--coin=x] [--due=YYYY-MM-DD] [--repeat=monthly] [--no-email]
  *   payagent invoices                 invoices you sent (PAYAGENT_KEY)
+ *   payagent webhooks | webhook add|test|rotate|rm|log   your webhooks (PAYAGENT_KEY)
  *   payagent mcp                      MCP server on stdio
  *   payagent serve [--port N]         run your own pay.agent
  */
@@ -33,6 +34,13 @@ export const HELP = `payagent ${VERSION}: get paid, and pay, in crypto (https://
                                     send an invoice; CoinPay emails the pay link
   payagent invoices                 invoices you sent, and whether they are paid
   payagent invoice-status <id>      one invoice's status (public)
+  payagent webhooks                 your webhook endpoints and the events pay.agent sends
+  payagent webhook add <url> [events…]
+                                    POST your link's events to your URL (Standard
+                                    Webhooks); prints the signing secret
+  payagent webhook test|rotate|rm <id>
+                                    send a test, replace the secret, or remove it
+  payagent webhook log [id]         recent deliveries
   payagent mcp                      MCP server: claude mcp add payagent -- bunx @profullstack/payagent mcp
   payagent serve [--port N]         run your own instance
 
@@ -113,6 +121,41 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
       case 'invoice-status': {
         const i = await client.invoiceStatus(rest[0] ?? '')
         show(i, `${i.number || i.id}: ${i.status}  ${i.url}`)
+        return 0
+      }
+      case 'webhooks': {
+        const r = await client.webhooks()
+        show(r, [...r.endpoints.map((w) => `${w.id}  ${w.url}  ${w.events.join(',')}${w.enabled ? '' : `  OFF (${w.disabled_reason})`}`), `events: ${r.event_types.join(', ')}`].join('\n'))
+        return 0
+      }
+      case 'webhook': {
+        const [sub, id, ...more] = rest
+        if (sub === 'add') {
+          if (!id) throw new Error('usage: payagent webhook add <url> [events…]')
+          const r = await client.addWebhook(id, more)
+          show(r, `${r.endpoint.id} -> ${r.endpoint.url} (${r.endpoint.events.join(', ')})\nsigning secret: ${r.secret}`)
+          return 0
+        }
+        if (sub === 'log') {
+          const r = await client.webhookLog(id)
+          show(r, r.deliveries.map((d) => `${d.created_at.slice(0, 19)}  ${d.event_type.padEnd(17)} ${d.status.padEnd(9)} x${d.attempts} ${d.last_status ?? ''} ${d.last_error ?? ''}`).join('\n') || 'no deliveries yet')
+          return 0
+        }
+        if (!id || !['test', 'rotate', 'rm', 'remove', 'delete'].includes(sub ?? '')) {
+          out.error('usage: payagent webhook add <url> [events…] | test|rotate|rm <id> | log [id]')
+          return 2
+        }
+        if (sub === 'test') {
+          const r = await client.testWebhook(id)
+          show(r, r.ok ? `delivered (HTTP ${r.status})` : `failed: ${r.error ?? `HTTP ${r.status}`}`)
+          return r.ok ? 0 : 1
+        }
+        if (sub === 'rotate') {
+          const r = await client.rotateWebhook(id)
+          show(r, `new signing secret: ${r.secret}`)
+          return 0
+        }
+        show(await client.removeWebhook(id), 'removed')
         return 0
       }
       case 'status': {

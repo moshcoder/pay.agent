@@ -12,6 +12,12 @@ your CoinPay business. pay.agent never holds funds.
 - **Invoices**: `POST /api/v1/invoices {"to_email", "description", "amount_usd", "recurrence": "monthly"}` (your key) → a real
   CoinPay invoice sent as you; CoinPay emails the pay link and sends the repeats. `payagent invoice pat@example.com 49 Logo`,
   MCP `send_invoice`. Each one has a public page at `pay.agent/i/<id>`.
+- **Webhooks**: pay.agent POSTs `payment.created`, `payment.paid`, `payment.expired`, `payment.failed`,
+  `invoice.created`, `invoice.paid`, `invoice.overdue` and `invoice.cancelled` for your link to your URL, as
+  CloudEvents signed per [Standard Webhooks](https://www.standardwebhooks.com/) (via
+  [@profullstack/webhooks](https://github.com/profullstack/webhooks)), retried for about three days. Add one on
+  `/me#webhooks`, `POST /api/v1/webhooks {"url", "events": ["payment.*"]}` (your key), `payagent webhook add <url>`,
+  or MCP `create_webhook`. Signing secrets are sealed with `PAYAGENT_KEY`.
 - **CLI / TUI**: `bunx @profullstack/payagent alice 5 --email=me@example.com`, or `bunx @profullstack/payagent`
 - **MCP**: `claude mcp add payagent -- bunx @profullstack/payagent mcp`
 - **Agents, no browser**: `COINPAY_EMAIL=… COINPAY_PASSWORD=… bunx @profullstack/payagent claim mybot` (or
