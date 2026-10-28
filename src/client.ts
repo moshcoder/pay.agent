@@ -103,6 +103,12 @@ export class PayAgentClient {
     return this.call('GET', '/api/v1/me', undefined, true)
   }
 
+  /** Drop pay.agent's in-memory key for your CoinPay tokens now: your link pauses until you sign in again. */
+  lock(): Promise<{ locked: boolean }> {
+    if (!this.key) throw new ApiError('Set PAYAGENT_KEY to your key from pay.agent/me', 401)
+    return this.call('POST', '/api/v1/lock', undefined, true)
+  }
+
   /** Send an invoice from your link (needs PAYAGENT_KEY): CoinPay emails them a pay link. */
   invoice(input: InvoiceRequest): Promise<ApiInvoice> {
     if (!this.key) throw new ApiError('Set PAYAGENT_KEY to your key from pay.agent/me', 401)

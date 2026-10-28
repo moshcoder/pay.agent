@@ -25,6 +25,7 @@ export const HELP = `payagent ${VERSION}: get paid, and pay, in crypto (https://
   payagent who <handle>             their name and the coins they take
   payagent status <id> [--wait]     a payment's status; --wait until it settles
   payagent me                       your link and payments (PAYAGENT_KEY=pa_…)
+  payagent lock                     pause your link now (sign in again to resume)
   payagent claim [handle] [--business=<id>]
                                     claim your link, or a new key for it, with no
                                     browser: signs in to CoinPay with COINPAY_TOKEN
@@ -97,7 +98,16 @@ export async function main(argv = process.argv.slice(2), out: Out = console, cli
       }
       case 'me': {
         const me = await client.me()
-        show(me, `${me.url}\n${me.payments.map((p) => `${p.created_at.slice(0, 16)}  $${p.amount_usd}  ${p.coin}  ${p.status}  ${p.note}`).join('\n') || 'no payments yet'}`)
+        const lockLine = (me as { locked?: boolean; unlocked_until?: string | null }).locked
+          ? 'locked: your link is paused until you sign in again (pay.agent/auth/start or payagent claim)\n'
+          : (me as { unlocked_until?: string | null }).unlocked_until
+            ? `live until ${(me as { unlocked_until?: string }).unlocked_until}\n`
+            : ''
+        show(me, `${me.url}\n${lockLine}${me.payments.map((p) => `${p.created_at.slice(0, 16)}  $${p.amount_usd}  ${p.coin}  ${p.status}  ${p.note}`).join('\n') || 'no payments yet'}`)
+        return 0
+      }
+      case 'lock': {
+        show(await client.lock(), 'Locked. Your link is paused until you sign in again.')
         return 0
       }
       case 'invoice': {

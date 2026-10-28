@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { signWebhook } from '@profullstack/coinpay-onboard'
 import { Sealer, Store, validHandle } from '../src/db.ts'
 import { createApp } from '../src/server.ts'
+import { PayAgent } from '../src/service.ts'
 import { onKey, initialState } from '../src/tui.ts'
 import { main } from '../src/cli.ts'
 import { PayAgentClient } from '../src/client.ts'
@@ -10,7 +11,9 @@ import { fakeCoinPay } from './fake-coinpay.ts'
 function setup() {
   const cp = fakeCoinPay()
   const store = new Store(':memory:', new Sealer('test-key-0123456789abcdef'))
-  const app = createApp({ store, key: 'test-key-0123456789abcdef', secureCookies: false, config: { coinpayBase: 'https://cp.test', clientId: 'cp_client', webhookOrigin: 'https://pay.agent.pit.world', fetch: cp.fetchImpl } })
+  const config = { coinpayBase: 'https://cp.test', clientId: 'cp_client', webhookOrigin: 'https://pay.agent.pit.world', fetch: cp.fetchImpl }
+  const agent = new PayAgent(store, config)
+  const app = createApp({ store, key: 'test-key-0123456789abcdef', secureCookies: false, config, agent })
   let cookie = ''
   const req = async (path: string, init: RequestInit & { form?: Record<string, string> } = {}, host = 'pay.agent') => {
     const headers = new Headers(init.headers)
@@ -27,7 +30,7 @@ function setup() {
     return res
   }
   const csrfFrom = async (res: Response) => /name="csrf" value="([0-9a-f]+)"/.exec(await res.text())?.[1] ?? ''
-  return { cp, store, req, csrfFrom }
+  return { cp, store, agent, req, csrfFrom }
 }
 
 async function signIn(t: ReturnType<typeof setup>, host = 'pay.agent') {
@@ -160,10 +163,10 @@ describe('pay.agent end to end', () => {
     expect((await t.req('/start', { method: 'POST', form: { csrf, handle: 'help', mode: 'wallet' } })).status).toBe(400)
     expect(validHandle('a')).not.toBeNull()
     expect(validHandle('ok_name-1')).toBeNull()
-    t.store.saveTokens('merchant-1', { accessToken: 'old', refreshToken: 'rt-old', expiresAt: Date.now() })
+    await t.agent.vault.write('merchant-1', { accessToken: 'old', refreshToken: 'rt-old', expiresAt: Date.now() })
     expect((await t.req('/start', { method: 'POST', form: { csrf, handle: 'carol', mode: 'wallet' } })).status).toBe(200)
     expect(t.cp.state.refreshes).toBe(1)
-    expect(t.store.tokens('merchant-1')!.accessToken).toBe('at-refreshed')
+    expect((await t.agent.vault.read('merchant-1')).accessToken).toBe('at-refreshed')
   })
 
   test('plain http on the Moshpit name signs in through the relay', async () => {
@@ -321,7 +324,9 @@ describe('claiming without a browser', () => {
   function headless() {
     const cp = fakeCoinPay()
     const store = new Store(':memory:', new Sealer('test-key-0123456789abcdef'))
-    const app = createApp({ store, key: 'test-key-0123456789abcdef', secureCookies: false, config: { coinpayBase: 'https://cp.test', clientId: 'cp_client', webhookOrigin: 'https://pay.agent.pit.world', fetch: cp.fetchImpl } })
+    const config = { coinpayBase: 'https://cp.test', clientId: 'cp_client', webhookOrigin: 'https://pay.agent.pit.world', fetch: cp.fetchImpl }
+  const agent = new PayAgent(store, config)
+  const app = createApp({ store, key: 'test-key-0123456789abcdef', secureCookies: false, config, agent })
     const doFetch = (async (url: string | URL, init: RequestInit = {}) => {
       const u = new URL(String(url))
       if (u.host === 'cp.test') return cp.fetchImpl(url, init)

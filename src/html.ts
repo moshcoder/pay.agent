@@ -163,7 +163,7 @@ bunx @profullstack/payagent invoice pat@example.com 49 Logo --repeat=monthly
 bunx @profullstack/payagent webhook add https://example.com/hook payment.paid
 bunx @profullstack/payagent                               the TUI
 claude mcp add payagent -- bunx @profullstack/payagent mcp</pre></div>
-<div class="card"><h2>Your data</h2><p>We keep your CoinPay name and email, your handle, which business your link pays, and your CoinPay sign-in (encrypted). Payments to you are listed for you only. Sign out removes the session; to delete everything, use <b>Delete my link</b> on <a href="/me">My link</a>.</p></div>
+<div class="card"><h2>Your data</h2><p>We keep your CoinPay name and email, your handle, which business your link pays, and your CoinPay sign-in, sealed with a key kept only in pay.agent's memory, never on disk: after a restart or when your chosen time runs out, your link pauses until you sign in again. Payments to you are listed for you only. Sign out removes the session; to delete everything, use <b>Delete my link</b> on <a href="/me">My link</a>.</p></div>
 <div class="card"><h2>Reaching pay.agent</h2><p><code>pay.agent</code> is a <a href="https://pit.world">Moshpit</a> name. Without Moshpit DNS, use <a href="https://pay.agent.pit.world/">pay.agent.pit.world</a>: the same site.</p></div>`,
   })
 }
@@ -231,7 +231,7 @@ function linkBox(origin: string, handle: string): string {
 <div class="address"><code>${esc(url)}</code><button class="copy" type="button" data-copy="${esc(url)}">Copy</button></div>`
 }
 
-export function dashboardPage(ctx: Ctx, o: { user: User; payments: PaymentRow[]; invoices?: InvoiceRow[]; apiKey?: string; qr: string; flash?: string; coinsNote?: string; invoiceForm?: Record<string, string>; webhooks?: PublicEndpoint[]; webhookSecret?: string; webhookNote?: string }): string {
+export function dashboardPage(ctx: Ctx, o: { user: User; payments: PaymentRow[]; invoices?: InvoiceRow[]; apiKey?: string; qr: string; flash?: string; coinsNote?: string; invoiceForm?: Record<string, string>; webhooks?: PublicEndpoint[]; webhookSecret?: string; webhookNote?: string; access?: { unlocked: boolean; expiresAt: string | null } }): string {
   const f = o.invoiceForm ?? {}
   const csrf = `<input type="hidden" name="csrf" value="${esc(ctx.csrf)}">`
   const invoices = o.invoices ?? []
@@ -250,6 +250,7 @@ ${o.flash ? `<p class="note">${esc(o.flash)}</p>` : ''}
 <p class="muted small">Takes ${u.coins.length ? esc(u.coins.map(coinName).join(', ')) : '<b>nothing yet: add a payout address</b>'} · pays ${u.mode === 'business' ? `your business <b>${esc(u.businessName)}</b>` : 'your CoinPay wallet'}</p>
 <form method="post" action="/me/recheck#coins"><input type="hidden" name="csrf" value="${esc(ctx.csrf)}"><button class="copy">Re-check coins</button></form>
 ${o.coinsNote ? `<p class="note" role="status">${esc(o.coinsNote)}</p>` : ''}</div>
+${o.access ? accessCard(ctx, o.access) : ''}
 <div class="card"><h2>Ask for an amount</h2><p class="muted small">A link with the amount filled in.</p>
 <form method="get" action="/${esc(u.handle)}" class="row"><input name="amount" inputmode="decimal" placeholder="Amount (USD)"><input name="note" maxlength="140" placeholder="What for (optional)"><button class="btn">Make link</button></form></div>
 <div class="card" id="invoice"><h2>Send an invoice</h2><p class="muted small">CoinPay emails them a pay link for the exact amount. Repeat it and CoinPay sends the next ones by itself.</p>
@@ -285,7 +286,23 @@ ${(['test', 'rotate', 'delete'] as const).map((a) => `<form method="post" action
   })
 }
 
-export function payPage(ctx: Ctx, o: { payee: User; amount?: string; note?: string; email?: string; payer?: string; error?: string }): string {
+/**
+ * How long pay.agent can act for them on CoinPay. Their tokens open only with
+ * a key held in pay.agent's memory, so a restart, the timer or Lock pauses
+ * their link until they sign in again.
+ */
+function accessCard(ctx: Ctx, a: { unlocked: boolean; expiresAt: string | null }): string {
+  const csrf = `<input type="hidden" name="csrf" value="${esc(ctx.csrf)}">`
+  if (!a.unlocked) {
+    return `<div class="card" id="access"><h2>Your link is paused</h2><p class="note error">locked: pay.agent cannot act for you on CoinPay until you sign in again, so payments, invoices and API calls wait.</p><p><a class="btn" href="/auth/start">Sign in with CoinPay to resume</a></p></div>`
+  }
+  const until = a.expiresAt ? esc(a.expiresAt.slice(0, 16).replace('T', ' ')) + ' UTC' : 'soon'
+  return `<div class="card" id="access"><h2>CoinPay access</h2><p class="muted small">pay.agent can take payments for you until <b>${until}</b>. Your CoinPay tokens are sealed with a key kept only in pay.agent's memory, never on disk: when it ends, or pay.agent restarts, your link pauses until you sign in again.</p>
+<form method="post" action="/me/ttl#access" class="row">${csrf}<label class="small">Keep my link live for <select name="ttl">${[['8h', '8 hours'], ['1d', '1 day'], ['3d', '3 days'], ['7d', '7 days']].map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label><button class="copy">Set</button></form>
+<form method="post" action="/me/lock#access">${csrf}<button class="copy bad">Lock now</button></form></div>`
+}
+
+export function payPage(ctx: Ctx, o: { payee: User; amount?: string; note?: string; email?: string; payer?: string; error?: string; paused?: boolean }): string {
   const p = o.payee
   const initial = (p.name || p.handle || '?').trim().charAt(0).toUpperCase()
   return layout({
@@ -294,7 +311,7 @@ export function payPage(ctx: Ctx, o: { payee: User; amount?: string; note?: stri
     description: `Pay ${p.name || p.handle} in crypto${p.coins.length ? `: ${p.coins.map(coinName).join(', ')}` : ''}, through CoinPay.`,
     path: `/${p.handle}`,
     body: `<section class="payee"><div class="avatar" aria-hidden="true">${esc(initial)}</div><h1>${esc(p.name || p.handle)}</h1><p class="muted">pay.agent/${esc(p.handle)}</p></section>
-${o.error ? `<p class="note error">${esc(o.error)}</p>` : ''}
+${o.paused && !o.error ? `<p class="note error">This pay link is paused until its owner signs in to pay.agent again.</p>` : ''}${o.error ? `<p class="note error">${esc(o.error)}</p>` : ''}
 <form method="post" action="/${esc(p.handle)}" class="card">
   <label for="amount" class="center">Amount in USD</label>
   <input id="amount" class="amount-input" name="amount" required inputmode="decimal" placeholder="0" value="${esc(o.amount ?? '')}" autofocus>
