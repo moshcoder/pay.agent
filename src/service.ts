@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto'
 import { COINS, CoinPay, onboard, payableBy, payableCoins, readWebhook, walletCode, type CheckoutSession, type OnboardStep } from '@profullstack/coinpay-onboard'
 import { refresh as refreshTokens } from '@profullstack/coinpay-onboard/oauth'
 import { Webhooks, sqliteStore as webhookStore, type GuardOptions } from '@profullstack/webhooks'
+import { LockedError, TokenVault, legacyKeyMigrationEnabled } from './vault.js'
 import { validHandle, type InvoiceRow, type Mode, type PaymentRow, type Store, type User } from './db.js'
 
 export type Config = {
@@ -17,6 +18,18 @@ export type Config = {
   /** Checks on customer webhook URLs; tests allow private addresses. */
   webhookGuard?: GuardOptions
   fetch?: typeof fetch
+  /** Tests inject one; serve() makes the real in-memory vault. */
+  vault?: TokenVault
+  /** Whether legacy PAYAGENT_KEY token copies may still be migrated (LEGACY_KEY_MIGRATION != off). */
+  legacyKeyMigration?: boolean
+}
+
+export { LockedError }
+
+/** HTTP status for an error from the service: 423 locked, 400 the caller's input, 502 CoinPay. */
+export function errorStatus(e: unknown): 400 | 423 | 502 {
+  if (e instanceof LockedError) return 423
+  return e instanceof SetupError ? 400 : 502
 }
 
 /** What pay.agent tells its customers' webhooks about, for the payments and invoices of their link. */
@@ -47,7 +60,11 @@ export class PayAgent {
   /** Customer webhooks (@profullstack/webhooks): endpoints per account, durable delivery, secrets sealed with PAYAGENT_KEY. */
   readonly hooks: Webhooks
 
+  /** Where this process keeps each person's CoinPay tokens unlocked (memory only). */
+  readonly vault: TokenVault
+
   constructor(readonly store: Store, readonly config: Config) {
+    this.vault = config.vault ?? new TokenVault(store, { legacyMigration: config.legacyKeyMigration ?? legacyKeyMigrationEnabled() })
     this.hooks = new Webhooks({
       store: webhookStore(store.db as never),
       source: 'https://pay.agent',
@@ -115,31 +132,47 @@ export class PayAgent {
     }
   }
 
+  /** Whether pay.agent can act for this person on CoinPay right now (unlocked, or a legacy copy still to migrate). */
+  canAct(sub: string): boolean {
+    return this.vault.status(sub).unlocked || ((this.config.legacyKeyMigration ?? legacyKeyMigrationEnabled()) && this.store.hasLegacyTokens(sub))
+  }
+
+  /** The owner's view of their unlock. A pending legacy copy counts as live (it migrates on first use). */
+  access(sub: string): { unlocked: boolean; expiresAt: string | null } {
+    const s = this.vault.status(sub)
+    return s.unlocked ? s : { unlocked: this.canAct(sub), expiresAt: null }
+  }
+
   /** Every account's webhooks go with the account. */
   async forget(sub: string): Promise<void> {
+    this.vault.lock(sub)
     for (const e of await this.hooks.listEndpoints(sub)) await this.hooks.deleteEndpoint(sub, e.id)
     this.store.deleteUser(sub)
   }
 
-  /** A CoinPay client acting as this person, refreshing their token when it is about to lapse. */
+  /**
+   * A CoinPay client acting as this person, refreshing their token when it is
+   * about to lapse. Throws LockedError while their tokens are locked (after a
+   * restart, the TTL, or Lock): they sign in again to resume.
+   */
   clientFor(sub: string): Promise<CoinPay> {
     const pending = this.refreshing.get(sub)
     if (pending) return pending
-    const tokens = this.store.tokens(sub)
-    if (!tokens) return Promise.reject(new SetupError('Sign in with CoinPay again.'))
     const make = (token: string) => new CoinPay({ base: this.config.coinpayBase, token, ...(this.config.fetch ? { fetch: this.config.fetch } : {}) })
-    if (tokens.expiresAt - Date.now() > 60_000) return Promise.resolve(make(tokens.accessToken))
-    if (!tokens.refreshToken) return Promise.reject(new SetupError('Your CoinPay sign-in has expired. Sign in again.'))
     // One refresh at a time per person: the refresh token is spent by using it.
-    const job = refreshTokens({
-      refreshToken: tokens.refreshToken,
-      clientId: this.config.clientId,
-      ...(this.config.clientSecret ? { clientSecret: this.config.clientSecret } : {}),
-      base: this.config.coinpayBase,
-      ...(this.config.fetch ? { fetch: this.config.fetch } : {}),
-    })
-      .then((next) => {
-        this.store.saveTokens(sub, { accessToken: next.accessToken, refreshToken: next.refreshToken ?? tokens.refreshToken, expiresAt: next.expiresAt })
+    const job = this.vault
+      .read(sub)
+      .then(async (tokens) => {
+        if (tokens.expiresAt - Date.now() > 60_000) return make(tokens.accessToken)
+        if (!tokens.refreshToken) throw new SetupError('Your CoinPay sign-in has expired. Sign in again.')
+        const next = await refreshTokens({
+          refreshToken: tokens.refreshToken,
+          clientId: this.config.clientId,
+          ...(this.config.clientSecret ? { clientSecret: this.config.clientSecret } : {}),
+          base: this.config.coinpayBase,
+          ...(this.config.fetch ? { fetch: this.config.fetch } : {}),
+        })
+        await this.vault.write(sub, { accessToken: next.accessToken, refreshToken: next.refreshToken ?? tokens.refreshToken, expiresAt: next.expiresAt })
         return make(next.accessToken)
       })
       .finally(() => this.refreshing.delete(sub))

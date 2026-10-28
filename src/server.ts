@@ -20,7 +20,8 @@ import { checkoutPage, dashboardPage, helpPage, homePage, invoicePage, messagePa
 import { startPitFooterRefresh } from './pit-footer.js'
 import { FOOTER_SCRIPT_SRC, ringDescriptor, startRingFooterRefresh } from './ring-footer.js'
 import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from './ring.js'
-import { PayAgent, SetupError, type Config, type InvoiceInput, type Recurrence } from './service.js'
+import { parseTtl } from '@profullstack/sealed-secrets'
+import { PayAgent, SetupError, errorStatus, type Config, type InvoiceInput, type Recurrence } from './service.js'
 import { VERSION } from './version.js'
 
 export { VERSION }
@@ -133,7 +134,10 @@ export function createApp(deps: Deps) {
     const tokens = await exchangeCode({ code, verifier: saved.verifier, clientId: config.clientId, ...(config.clientSecret ? { clientSecret: config.clientSecret } : {}), redirectUri: saved.redirectUri, base: config.coinpayBase, ...(config.fetch ? { fetch: config.fetch } : {}) })
     if (!tokens.scope.split(' ').includes('merchant')) throw new SetupError('pay.agent needs to set up payments on your CoinPay account. Sign in again and allow it.')
     const me = await new CoinPay({ base: config.coinpayBase, token: tokens.accessToken, ...(config.fetch ? { fetch: config.fetch } : {}) }).userinfo()
-    return store.upsertUser(me.sub, me.name ?? '', me.email ?? '', tokens)
+    const user = store.upsertUser(me.sub, me.name ?? '', me.email ?? '')
+    // Signing in is the unlock: tokens sealed under an in-memory key only.
+    await agent.vault.unlock(me.sub, { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, expiresAt: tokens.expiresAt })
+    return user
   }
 
   app.get('/auth/callback', async (c) => {
@@ -193,7 +197,7 @@ export function createApp(deps: Deps) {
       return page(c, setupDonePage(ctxOf(c), { handle: store.user(user.sub)!.handle!, steps: r.steps, coins: r.coins }))
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
-      return wizard(c, { error: { message, ...(e instanceof SetupError && e.field ? { field: e.field } : {}) }, values: form }, e instanceof SetupError ? 400 : 502)
+      return wizard(c, { error: { message, ...(e instanceof SetupError && e.field ? { field: e.field } : {}) }, values: form }, errorStatus(e))
     }
   })
 
@@ -204,12 +208,12 @@ export function createApp(deps: Deps) {
     if (!user.handle) return c.redirect('/start')
     const qr = await qrSvg(`${ctx.origin}/${user.handle}`)
     const webhooks = await agent.hooks.listEndpoints(user.sub)
-    return page(c, dashboardPage(ctx, { user, payments: store.payments(user.handle), invoices: store.invoices(user.handle), qr, webhooks, ...extra }), status)
+    return page(c, dashboardPage(ctx, { user, payments: store.payments(user.handle), invoices: store.invoices(user.handle), qr, webhooks, access: agent.access(user.sub), ...extra }), status)
   }
 
   app.get('/me', async (c) => (userOf(c) ? dashboard(c) : c.redirect('/auth/start')))
 
-  app.post('/me/:action{(recheck|key|delete)}', async (c) => {
+  app.post('/me/:action{(recheck|key|delete|lock|ttl)}', async (c) => {
     const user = userOf(c)
     if (!user) return c.redirect('/auth/start')
     const form = await c.req.parseBody()
@@ -227,6 +231,13 @@ export function createApp(deps: Deps) {
         const key = `pa_${randomBytes(24).toString('base64url')}`
         store.setApiKey(user.sub, key)
         return dashboard(c, { apiKey: key })
+      }
+      case 'lock':
+        agent.vault.lock(user.sub)
+        return dashboard(c, { flash: 'Locked. Your link is paused until you sign in again.' })
+      case 'ttl': {
+        const r = agent.vault.extend(user.sub, parseTtl(String(form.ttl ?? '')))
+        return dashboard(c, { flash: r.unlocked ? 'Done.' : 'Your link is paused: sign in again first.' })
       }
       case 'delete':
         await agent.forget(user.sub)
@@ -323,7 +334,7 @@ export function createApp(deps: Deps) {
       const p = await agent.pay(c.req.param('handle'), { amountUsd: Number(body.amount_usd), email, origin: origin(c), ...(typeof body.note === 'string' ? { note: body.note } : {}), ...(typeof body.payer === 'string' ? { payer: body.payer } : {}) })
       return c.json(publicPayment(p, origin(c)), 201)
     } catch (e) {
-      return c.json({ error: e instanceof Error ? e.message : String(e) }, e instanceof SetupError ? 400 : 502)
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e))
     }
   })
 
@@ -351,10 +362,19 @@ export function createApp(deps: Deps) {
   app.all('/api/v1/webhooks', webhooksRoute)
   app.all('/api/v1/webhooks/*', webhooksRoute)
 
+  // Lock: drop the in-memory key now. Unlocking is a CoinPay sign-in (browser, or POST /api/v1/claim).
+  app.post('/api/v1/lock', (c) => {
+    const u = keyUser(c)
+    if (!u) return c.json(NO_KEY, 401)
+    agent.vault.lock(u.sub)
+    return c.json({ locked: true })
+  })
+
   app.get('/api/v1/me', (c) => {
     const u = keyUser(c)
     if (!u?.handle) return c.json(NO_KEY, 401)
-    return c.json({ ...publicUser(u, origin(c)), mode: u.mode, business: u.businessName, payments: store.payments(u.handle).map((p) => ({ ...publicPayment(p, origin(c)), note: p.note, payer: p.payer, created_at: new Date(p.createdAt).toISOString() })) })
+    const access = agent.access(u.sub)
+    return c.json({ ...publicUser(u, origin(c)), mode: u.mode, business: u.businessName, locked: !access.unlocked, unlocked_until: access.expiresAt, payments: store.payments(u.handle).map((p) => ({ ...publicPayment(p, origin(c)), note: p.note, payer: p.payer, created_at: new Date(p.createdAt).toISOString() })) })
   })
 
   /*
@@ -415,7 +435,7 @@ export function createApp(deps: Deps) {
     try {
       user = await signInWith(code, saved)
     } catch (e) {
-      return c.json({ error: e instanceof Error ? e.message : 'CoinPay did not answer' }, e instanceof SetupError ? 400 : 502)
+      return c.json({ error: e instanceof Error ? e.message : 'CoinPay did not answer' }, errorStatus(e))
     }
     try {
       let steps: unknown[] = []
@@ -434,7 +454,7 @@ export function createApp(deps: Deps) {
       const u = store.user(user.sub)!
       return c.json({ ...publicUser(u, origin(c)), mode: u.mode, api_key: key, steps, new: steps.length > 0 }, steps.length ? 201 : 200)
     } catch (e) {
-      return c.json({ error: e instanceof Error ? e.message : String(e), ...(e instanceof SetupError && e.field ? { field: e.field } : {}) }, e instanceof SetupError ? 400 : 502)
+      return c.json({ error: e instanceof Error ? e.message : String(e), ...(e instanceof SetupError && e.field ? { field: e.field } : {}) }, errorStatus(e))
     }
   })
 
@@ -463,7 +483,7 @@ export function createApp(deps: Deps) {
       const r = await agent.sendInvoice(u, invoiceInput(body))
       return c.json({ ...publicInvoice(r.invoice, origin(c)), to_email: r.invoice.toEmail, ...(r.warning ? { warning: r.warning } : {}) }, 201)
     } catch (e) {
-      return c.json({ error: e instanceof Error ? e.message : String(e) }, e instanceof SetupError ? 400 : 502)
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, errorStatus(e))
     }
   })
 
@@ -495,7 +515,7 @@ export function createApp(deps: Deps) {
   app.get('/:handle', (c) => {
     const payee = store.byHandle(c.req.param('handle'))
     if (!payee?.handle) return page(c, messagePage(ctxOf(c), { title: 'No such pay link', message: 'Nobody has that name yet. It could be yours.' }), 404)
-    return page(c, payPage(ctxOf(c), { payee, amount: c.req.query('amount'), note: c.req.query('note') }))
+    return page(c, payPage(ctxOf(c), { payee, amount: c.req.query('amount'), note: c.req.query('note'), paused: !agent.canAct(payee.sub) }))
   })
 
   app.post('/:handle', async (c) => {
@@ -511,7 +531,7 @@ export function createApp(deps: Deps) {
       // Straight to CoinPay's hosted checkout; it sends the payer back to /p/<id>.
       return c.redirect(p.checkoutUrl || `/p/${p.id}`, 303)
     } catch (e) {
-      return page(c, payPage(ctxOf(c), { ...again, error: e instanceof Error ? e.message : String(e) }), e instanceof SetupError ? 400 : 502)
+      return page(c, payPage(ctxOf(c), { ...again, error: e instanceof Error ? e.message : String(e) }), errorStatus(e))
     }
   })
 

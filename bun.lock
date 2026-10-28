@@ -9,6 +9,7 @@
         "@profullstack/coinpay-onboard": "0.2.0",
         "@profullstack/footer": "0.4.0",
         "@profullstack/hqtui": "^0.11.1",
+        "@profullstack/sealed-secrets": "0.1.0",
         "@profullstack/webhooks": "0.2.1",
         "hono": "^4.13.14",
         "qrcode": "^1.5.4",
@@ -34,6 +35,8 @@
     "@profullstack/footer": ["@profullstack/footer@0.4.0", "", { "peerDependencies": { "react": ">=18" }, "optionalPeers": ["react"], "bin": { "profullstack-footer": "bin/profullstack-footer.js" } }, "sha512-EJZnMUQmWDi9Gzx6BAjogloeaPFFSSCHtHJuC9dsXiOz8M87hfn6Z+Zx9AMYWk8s6xemPrPlkXKGB3PZugkcEA=="],
 
     "@profullstack/hqtui": ["@profullstack/hqtui@0.11.1", "", { "bin": { "hqtui": "bin/hqtui.mjs" } }, "sha512-c/UzTmiRDjdLZQEO/gdVinUKtx6Q0WBPdixIm90MBTvC3DqFPqpersRs0BIDPS7XVokCSr1DtELI91kj5J1kCg=="],
+
+    "@profullstack/sealed-secrets": ["@profullstack/sealed-secrets@0.1.0", "", {}, "sha512-6LRa+yUT7PQ5tZNoYEnf3VVxsyw/dqHqAtYpk/aS/bntxf3mQH+2MwNjQoBd7fCqdN97TvZup8qhrpfUcZlfng=="],
 
     "@profullstack/webhooks": ["@profullstack/webhooks@0.2.1", "", {}, "sha512-QHeSkpu4O44oJ620qhQqxqFlD3u/OhupmXRnBHw4MGKuDTa0R+Y/727nnF7psSHxxSfnbWfNuVl15z3IXuaZiw=="],
 

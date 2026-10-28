@@ -38,7 +38,7 @@ bun install
 PAYAGENT_KEY=$(openssl rand -hex 32) PAYAGENT_COINPAY_CLIENT_ID=cp_… bun src/server.ts
 ```
 
-Settings: `PAYAGENT_KEY` (encrypts stored CoinPay tokens), `PAYAGENT_COINPAY_CLIENT_ID`
+Settings: `PAYAGENT_KEY` (seals webhook secrets and sign-in state; it can NOT open anyone's CoinPay tokens: those are sealed under a per-sign-in key kept in memory only, so a restart pauses every link until its owner signs in again, and `/me` + `GET /api/v1/me` show `locked`), `LEGACY_KEY_MIGRATION` (`off` stops migrating pre-0.6 token copies; `sqlite3 pay-agent.db 'select count(*) from users where tokens is not null'` counts what is left), `PAYAGENT_COINPAY_CLIENT_ID`
 / `_SECRET` (a CoinPay OAuth client with scopes `openid profile email wallet:read merchant`),
 `PAYAGENT_DB` (SQLite path), `PORT` (8796), `COINPAY_BASE`, `PAYAGENT_WEBHOOK_ORIGIN`.
 

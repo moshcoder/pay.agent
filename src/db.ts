@@ -2,9 +2,14 @@
  * pay.agent's state: one SQLite file.
  *
  * A person is their CoinPay account (`sub`). We keep their handle, which
- * business their link pays, which coins it takes, and their CoinPay tokens,
- * encrypted with PAYAGENT_KEY (AES-256-GCM). The refresh token is single-use,
- * so the newest one is written back on every refresh.
+ * business their link pays and which coins it takes.
+ *
+ * Their CoinPay tokens are NOT openable by anything stored here: since
+ * 2026-10-28 they are sealed under a random per-sign-in data key that lives
+ * only in process memory (src/vault.ts). The `tokens` column is the legacy
+ * copy sealed with PAYAGENT_KEY; it is only read by the one-shot migration
+ * (while LEGACY_KEY_MIGRATION is not "off") and is NULLed when used or on the
+ * owner's next sign-in.
  */
 import { Database } from 'bun:sqlite'
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
@@ -164,6 +169,10 @@ export class Store {
       if (!cols.has(col)) this.db.exec(`ALTER TABLE payments ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`)
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS payments_session ON payments(session_id) WHERE session_id != ''")
+    // Unlock-on-use (2026-10-28): tokens sealed under an in-memory data key.
+    const userCols = new Set((this.db.query('PRAGMA table_info(users)').all() as { name: string }[]).map((c) => c.name))
+    if (!userCols.has('tokens_sealed')) this.db.exec('ALTER TABLE users ADD COLUMN tokens_sealed TEXT')
+    if (!userCols.has('seal_version')) this.db.exec('ALTER TABLE users ADD COLUMN seal_version INTEGER NOT NULL DEFAULT 0')
   }
 
   private toUser(row: any): User | null {
@@ -182,13 +191,14 @@ export class Store {
     }
   }
 
-  upsertUser(sub: string, name: string, email: string, tokens: Tokens, now = Date.now()): User {
+  /** Creates or refreshes the account. Tokens are never passed here: see TokenVault. */
+  upsertUser(sub: string, name: string, email: string, now = Date.now()): User {
     this.db
       .query(
-        `INSERT INTO users (sub, name, email, tokens, created_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(sub) DO UPDATE SET name = excluded.name, email = excluded.email, tokens = excluded.tokens`,
+        `INSERT INTO users (sub, name, email, created_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(sub) DO UPDATE SET name = excluded.name, email = excluded.email`,
       )
-      .run(sub, name, email, this.sealer.seal(JSON.stringify(tokens)), now)
+      .run(sub, name, email, now)
     return this.user(sub)!
   }
 
@@ -228,13 +238,33 @@ export class Store {
     this.db.query('UPDATE users SET api_key_hash = ? WHERE sub = ?').run(hashKey(key), sub)
   }
 
-  tokens(sub: string): Tokens | null {
+  /** The tokens sealed under this person's in-memory data key (JSON CipherBlob), if any. */
+  sealedTokens(sub: string): string | null {
+    const row: any = this.db.query('SELECT tokens_sealed FROM users WHERE sub = ?').get(sub)
+    return row?.tokens_sealed ?? null
+  }
+
+  saveSealedTokens(sub: string, blob: string | null): void {
+    this.db.query('UPDATE users SET tokens_sealed = ?, seal_version = 2 WHERE sub = ?').run(blob, sub)
+  }
+
+  /** LEGACY: the pre-2026-10-28 copy under PAYAGENT_KEY. Only the one-shot migration reads it. */
+  legacyTokens(sub: string): Tokens | null {
     const row: any = this.db.query('SELECT tokens FROM users WHERE sub = ?').get(sub)
     return row?.tokens ? JSON.parse(this.sealer.open(row.tokens)) : null
   }
 
-  saveTokens(sub: string, tokens: Tokens): void {
-    this.db.query('UPDATE users SET tokens = ? WHERE sub = ?').run(this.sealer.seal(JSON.stringify(tokens)), sub)
+  hasLegacyTokens(sub: string): boolean {
+    return Boolean(this.db.query('SELECT 1 FROM users WHERE sub = ? AND tokens IS NOT NULL').get(sub))
+  }
+
+  clearLegacyTokens(sub: string): void {
+    this.db.query('UPDATE users SET tokens = NULL WHERE sub = ?').run(sub)
+  }
+
+  /** How many accounts still have a legacy token copy (the cutoff report). */
+  legacyTokenCount(): number {
+    return (this.db.query('SELECT COUNT(*) AS n FROM users WHERE tokens IS NOT NULL').get() as { n: number }).n
   }
 
   deleteUser(sub: string): void {
