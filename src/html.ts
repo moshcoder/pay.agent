@@ -5,11 +5,12 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { COINS, type OnboardStep } from '@profullstack/coinpay-onboard'
+import type { PublicEndpoint } from '@profullstack/webhooks'
 import type { InvoiceRow, PaymentRow, User } from './db.js'
 import { pitFooter } from './pit-footer.js'
 import { ringFooter } from './ring-footer.js'
 import { RING_PLACEHOLDER } from './ring.js'
-import { coinName, PAID, RECURRENCES, type InvoiceLive } from './service.js'
+import { coinName, PAID, RECURRENCES, WEBHOOK_EVENTS, type InvoiceLive } from './service.js'
 
 export const SITE = 'https://pay.agent'
 export const REPO = 'https://github.com/moshcoder/pay.agent'
@@ -144,6 +145,13 @@ POST /api/v1/users/:handle/payments        {"amount_usd": 5, "payer_email": "me@
 GET  /api/v1/payments/:id                  status: pending, confirmed, forwarded, completed (PayPal), expired</pre>
 <p>Your own payments, with the API key from <a href="/me">My link</a>:</p>
 <pre>GET  /api/v1/me                            -H 'authorization: Bearer pa_…'</pre>
+<p id="webhooks">Webhooks: pay.agent POSTs ${WEBHOOK_EVENTS.map((e) => `<code>${esc(e)}</code>`).join(', ')} for your link to your URL, as signed CloudEvents (<a href="https://www.standardwebhooks.com/">Standard Webhooks</a>, via <code>@profullstack/webhooks</code>), retried for about three days. Add one on <a href="/me#webhooks">My link</a> or with your key:</p>
+<pre>GET    /api/v1/webhooks                    your endpoints and the event types
+POST   /api/v1/webhooks                    {"url": "https://example.com/hook", "events": ["payment.*"]} -> {endpoint, secret}
+POST   /api/v1/webhooks/:id/test           send webhook.test now
+POST   /api/v1/webhooks/:id/rotate         a new signing secret
+GET    /api/v1/webhooks/deliveries         the delivery log
+DELETE /api/v1/webhooks/:id</pre>
 <p id="invoices">Invoices, sent through CoinPay as you (CoinPay emails the pay link; a repeat sends the next ones):</p>
 <pre>POST /api/v1/invoices                      {"to_email": "pat@example.com", "description": "Logo", "amount_usd": 49,
                                             "due_date": "2026-11-30", "recurrence": "monthly", "email": true}
@@ -152,6 +160,7 @@ GET  /api/v1/invoices/:id                  public: status (sent, paid, overdue),
 <pre>bunx @profullstack/payagent alice 5 --email=me@example.com  pay alice $5: prints the CoinPay checkout link
 bunx @profullstack/payagent status &lt;payment-id&gt;
 bunx @profullstack/payagent invoice pat@example.com 49 Logo --repeat=monthly
+bunx @profullstack/payagent webhook add https://example.com/hook payment.paid
 bunx @profullstack/payagent                               the TUI
 claude mcp add payagent -- bunx @profullstack/payagent mcp</pre></div>
 <div class="card"><h2>Your data</h2><p>We keep your CoinPay name and email, your handle, which business your link pays, and your CoinPay sign-in (encrypted). Payments to you are listed for you only. Sign out removes the session; to delete everything, use <b>Delete my link</b> on <a href="/me">My link</a>.</p></div>
@@ -222,8 +231,9 @@ function linkBox(origin: string, handle: string): string {
 <div class="address"><code>${esc(url)}</code><button class="copy" type="button" data-copy="${esc(url)}">Copy</button></div>`
 }
 
-export function dashboardPage(ctx: Ctx, o: { user: User; payments: PaymentRow[]; invoices?: InvoiceRow[]; apiKey?: string; qr: string; flash?: string; coinsNote?: string; invoiceForm?: Record<string, string> }): string {
+export function dashboardPage(ctx: Ctx, o: { user: User; payments: PaymentRow[]; invoices?: InvoiceRow[]; apiKey?: string; qr: string; flash?: string; coinsNote?: string; invoiceForm?: Record<string, string>; webhooks?: PublicEndpoint[]; webhookSecret?: string; webhookNote?: string }): string {
   const f = o.invoiceForm ?? {}
+  const csrf = `<input type="hidden" name="csrf" value="${esc(ctx.csrf)}">`
   const invoices = o.invoices ?? []
   const u = o.user
   const received = o.payments.filter((p) => PAID.has(p.status)).reduce((sum, p) => sum + p.amountUsd, 0)
@@ -257,6 +267,17 @@ ${invoices.length ? `<table><thead><tr><th>No.</th><th>To</th><th>Amount</th><th
       .join('')}</tbody></table>` : '<p class="muted">None yet.</p>'}</div>
 <div class="card"><h2>API key</h2>${o.apiKey ? `<p>Your key, shown once:</p><div class="address"><code>${esc(o.apiKey)}</code><button class="copy" type="button" data-copy="${esc(o.apiKey)}">Copy</button></div>` : `<p class="muted small">For <code>GET /api/v1/me</code>, the CLI and MCP. ${u.apiKeyHash ? 'You have one; making a new one replaces it.' : ''}</p>`}
 <form method="post" action="/me/key"><input type="hidden" name="csrf" value="${esc(ctx.csrf)}"><button class="copy">${u.apiKeyHash ? 'Replace my key' : 'Make a key'}</button></form></div>
+<div class="card" id="webhooks"><h2>Webhooks</h2><p class="muted small">pay.agent POSTs what happens on your link to your URL: ${WEBHOOK_EVENTS.map((e) => `<code>${esc(e)}</code>`).join(', ')}. CloudEvents JSON, signed per <a href="https://www.standardwebhooks.com/">Standard Webhooks</a> (verify with <code>@profullstack/webhooks</code> or any Standard Webhooks library); retried for about three days.</p>
+${o.webhookNote ? `<p class="note" role="status">${esc(o.webhookNote)}</p>` : ''}
+${o.webhookSecret ? `<p>Signing secret:</p><div class="address"><code>${esc(o.webhookSecret)}</code><button class="copy" type="button" data-copy="${esc(o.webhookSecret)}">Copy</button></div>` : ''}
+${(o.webhooks ?? [])
+      .map(
+        (w) => `<div class="row"><code>${esc(w.url)}</code> <span class="muted small">${esc(w.events.join(', '))}${w.enabled ? '' : ` · <span class="bad">off: ${esc(w.disabled_reason ?? 'disabled')}</span>`}</span>
+${(['test', 'rotate', 'delete'] as const).map((a) => `<form method="post" action="/me/webhooks/${a}#webhooks">${csrf}<input type="hidden" name="id" value="${esc(w.id)}"><button class="copy${a === 'delete' ? ' bad' : ''}">${a === 'test' ? 'Send a test' : a === 'rotate' ? 'New secret' : 'Remove'}</button></form>`).join('')}</div>`,
+      )
+      .join('')}
+<form method="post" action="/me/webhooks/add#webhooks" class="row">${csrf}<input name="url" type="url" required maxlength="2000" placeholder="https://example.com/webhooks/payagent" aria-label="Webhook URL"><input name="events" maxlength="300" placeholder="Events (blank = all, or payment.*)" aria-label="Events"><button class="btn">Add webhook</button></form>
+<p class="muted small">Also from the CLI (<code>payagent webhooks</code>), MCP (<code>create_webhook</code>) and <code>/api/v1/webhooks</code> with your key.</p></div>
 <details class="card"><summary>Change or delete</summary>
 <p><a href="/start">Change my name or where money lands</a></p>
 <form method="post" action="/me/delete"><input type="hidden" name="csrf" value="${esc(ctx.csrf)}"><button class="copy bad">Delete my link and everything pay.agent keeps</button></form>

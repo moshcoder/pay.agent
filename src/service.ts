@@ -5,6 +5,7 @@
 import { randomBytes } from 'node:crypto'
 import { COINS, CoinPay, onboard, payableBy, payableCoins, readWebhook, walletCode, type CheckoutSession, type OnboardStep } from '@profullstack/coinpay-onboard'
 import { refresh as refreshTokens } from '@profullstack/coinpay-onboard/oauth'
+import { Webhooks, sqliteStore as webhookStore, type GuardOptions } from '@profullstack/webhooks'
 import { validHandle, type InvoiceRow, type Mode, type PaymentRow, type Store, type User } from './db.js'
 
 export type Config = {
@@ -13,8 +14,13 @@ export type Config = {
   clientSecret?: string
   /** The public origin CoinPay posts events to: https://pay.agent */
   webhookOrigin: string
+  /** Checks on customer webhook URLs; tests allow private addresses. */
+  webhookGuard?: GuardOptions
   fetch?: typeof fetch
 }
+
+/** What pay.agent tells its customers' webhooks about, for the payments and invoices of their link. */
+export const WEBHOOK_EVENTS = ['payment.created', 'payment.paid', 'payment.expired', 'payment.failed', 'invoice.created', 'invoice.paid', 'invoice.overdue', 'invoice.cancelled']
 
 export class SetupError extends Error {
   constructor(message: string, readonly field?: string) {
@@ -38,8 +44,82 @@ export function sortCoins(ids: string[]): string[] {
 
 export class PayAgent {
   private refreshing = new Map<string, Promise<CoinPay>>()
+  /** Customer webhooks (@profullstack/webhooks): endpoints per account, durable delivery, secrets sealed with PAYAGENT_KEY. */
+  readonly hooks: Webhooks
 
-  constructor(readonly store: Store, readonly config: Config) {}
+  constructor(readonly store: Store, readonly config: Config) {
+    this.hooks = new Webhooks({
+      store: webhookStore(store.db as never),
+      source: 'https://pay.agent',
+      eventTypes: WEBHOOK_EVENTS,
+      secretBox: { seal: (s) => store.sealer.seal(s), open: (s) => store.sealer.open(s) },
+      ...(config.webhookGuard ? { guard: config.webhookGuard } : {}),
+      ...(config.fetch ? { fetchImpl: config.fetch } : {}),
+      log: (m) => console.log(m),
+    })
+  }
+
+  /** Tell the link owner's webhooks; never in the way of a payment. */
+  private hook(handle: string, type: string, data: Record<string, unknown>, subject: string): void {
+    const owner = this.store.byHandle(handle)
+    if (!owner) return
+    void this.hooks.emit(owner.sub, type, data, { subject }).catch((e) => console.error('pay.agent: webhook:', e instanceof Error ? e.message : e))
+  }
+
+  private paymentData(p: PaymentRow): Record<string, unknown> {
+    const origin = this.config.webhookOrigin.replace(/\/+$/, '')
+    return {
+      id: p.id,
+      handle: p.handle,
+      amount_usd: p.amountUsd,
+      status: p.status,
+      coin: p.coin || null,
+      note: p.note,
+      payer: p.payer,
+      ...(p.sessionId ? { session_id: p.sessionId } : {}),
+      ...(p.paymentId ? { coinpay_payment_id: p.paymentId } : {}),
+      checkout_url: p.checkoutUrl || `${origin}/p/${p.id}`,
+      status_url: `${origin}/p/${p.id}`,
+      created_at: new Date(p.createdAt).toISOString(),
+    }
+  }
+
+  private invoiceData(i: InvoiceRow): Record<string, unknown> {
+    const origin = this.config.webhookOrigin.replace(/\/+$/, '')
+    return {
+      id: i.id,
+      number: i.number,
+      handle: i.handle,
+      to_email: i.toEmail,
+      to_name: i.toName,
+      description: i.description,
+      amount_usd: i.amountUsd,
+      coin: i.coin,
+      due_date: i.dueDate,
+      recurrence: i.recurrence,
+      status: i.status,
+      url: `${origin}/i/${i.id}`,
+      coinpay_url: i.payUrl,
+      created_at: new Date(i.createdAt).toISOString(),
+    }
+  }
+
+  /** A payment row changed: payment.paid the first time it is paid, payment.expired / payment.failed when it ends unpaid. */
+  private paymentMoved(before: PaymentRow, id: string): void {
+    const after = this.store.payment(id)
+    if (!after || after.status === before.status) return
+    if (PAID.has(after.status)) {
+      if (!PAID.has(before.status)) this.hook(after.handle, 'payment.paid', this.paymentData(after), `payment:${id}`)
+    } else if (after.status === 'expired' || after.status === 'failed') {
+      this.hook(after.handle, `payment.${after.status}`, this.paymentData(after), `payment:${id}`)
+    }
+  }
+
+  /** Every account's webhooks go with the account. */
+  async forget(sub: string): Promise<void> {
+    for (const e of await this.hooks.listEndpoints(sub)) await this.hooks.deleteEndpoint(sub, e.id)
+    this.store.deleteUser(sub)
+  }
 
   /** A CoinPay client acting as this person, refreshing their token when it is about to lapse. */
   clientFor(sub: string): Promise<CoinPay> {
@@ -191,7 +271,9 @@ export class PayAgent {
       checkoutUrl: session.url,
       expiresAt: session.expiresAt,
     })
-    return this.store.payment(id)!
+    const made = this.store.payment(id)!
+    this.hook(payee.handle, 'payment.created', this.paymentData(made), `payment:${id}`)
+    return made
   }
 
   /**
@@ -211,6 +293,7 @@ export class PayAgent {
       // Forwarded is the last word; a late confirmed does not undo it.
       const next = row.status === 'forwarded' ? 'forwarded' : status
       this.store.settle(row.id, { status: next, paymentId: w.paymentId, coin: w.method ? w.method.toLowerCase() : '' })
+      this.paymentMoved(row, row.id)
       return { matched: true, paid: true }
     }
     if (PAID.has(row.status)) return { matched: true, paid: true }
@@ -218,7 +301,10 @@ export class PayAgent {
     // be paid; the session itself says when it is over, so we ask it in follow().
     if (!fromSession) {
       const status = w.status || w.type.replace(/^payment\./, '')
-      if (status) this.store.setStatus(row.id, status)
+      if (status) {
+        this.store.setStatus(row.id, status)
+        this.paymentMoved(row, row.id)
+      }
     }
     return { matched: true, paid: false }
   }
@@ -278,7 +364,9 @@ export class PayAgent {
       status: 'sent',
       payUrl: sent.paymentLink ?? `${this.config.coinpayBase}/now/${id}`,
     })
-    return { invoice: this.store.invoice(id)!, ...(sent.warning ? { warning: sent.warning } : {}) }
+    const invoice = this.store.invoice(id)!
+    this.hook(user.handle, 'invoice.created', this.invoiceData(invoice), `invoice:${id}`)
+    return { invoice, ...(sent.warning ? { warning: sent.warning } : {}) }
   }
 
   /** An invoice and, while it is open, what to send where; CoinPay's invoice view is public. */
@@ -289,7 +377,13 @@ export class PayAgent {
       const body = await new CoinPay({ base: this.config.coinpayBase, ...(this.config.fetch ? { fetch: this.config.fetch } : {}) }).call<{ invoice: any }>('GET', `/api/invoices/${encodeURIComponent(id)}/pay`)
       const inv = body.invoice ?? {}
       const status = String(inv.status ?? row.status)
-      if (status !== row.status) this.store.setInvoiceStatus(id, status)
+      // Read again after the wait: two pages polling at once must not both report the change.
+      const before = this.store.invoice(id)!
+      if (status !== before.status) {
+        this.store.setInvoiceStatus(id, status)
+        const event = INVOICE_EVENTS[status.toLowerCase()]
+        if (event) this.hook(before.handle, event, this.invoiceData(this.store.invoice(id)!), `invoice:${id}`)
+      }
       return {
         invoice: this.store.invoice(id)!,
         live: { status, amountCrypto: String(inv.crypto_amount ?? ''), address: String(inv.payment_address ?? ''), number: String(inv.invoice_number ?? row.number) },
@@ -310,11 +404,19 @@ export class PayAgent {
       if (row.sessionId) {
         // The session's public view: open, paid or expired.
         const s = await coinpay.checkoutSession(row.sessionId)
+        // Read again after the wait: the webhook (or another poll) may have settled it meanwhile.
+        const before = this.store.payment(id)!
+        if (FINAL.has(before.status)) return before
         if (s.status === 'paid') this.store.settle(id, { status: 'confirmed', paymentId: s.paymentId ?? '', coin: s.paidMethod ? s.paidMethod.toLowerCase() : '' })
         else if (s.status === 'expired' || s.status === 'canceled' || s.status === 'cancelled') this.store.setStatus(id, 'expired')
+        this.paymentMoved(before, id)
       } else {
         const fresh = await coinpay.payment(id)
-        if (fresh.status && fresh.status !== row.status) this.store.setStatus(id, fresh.status)
+        const before = this.store.payment(id)!
+        if (fresh.status && fresh.status !== before.status && !FINAL.has(before.status)) {
+          this.store.setStatus(id, fresh.status)
+          this.paymentMoved(before, id)
+        }
       }
     } catch {
       // CoinPay unreachable: show what we last knew.
@@ -348,6 +450,9 @@ export const PROPERTY = 'pay.agent.pit.world'
 const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
 
 const clean = (v: unknown, max: number) => String(v ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max)
+
+/** Invoice statuses CoinPay reports, and the event each one sends. */
+const INVOICE_EVENTS: Record<string, string> = { paid: 'invoice.paid', overdue: 'invoice.overdue', cancelled: 'invoice.cancelled', canceled: 'invoice.cancelled' }
 
 export const FINAL = new Set(['confirmed', 'forwarded', 'completed', 'expired', 'failed', 'refunded'])
 export const PAID = new Set(['confirmed', 'forwarded', 'completed'])

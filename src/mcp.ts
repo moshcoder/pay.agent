@@ -4,7 +4,8 @@
  *   claude mcp add payagent -- bunx @profullstack/payagent mcp
  *
  * Paying needs no key: ask for a payment, pay it at the CoinPay checkout URL it
- * returns, then check it. PAYAGENT_KEY (pa_…) adds `my_payments`, `send_invoice` and `my_invoices`.
+ * returns, then check it. PAYAGENT_KEY (pa_…) adds `my_payments`, `send_invoice`, `my_invoices`
+ * and the webhook tools (`list_webhooks`, `create_webhook`, ...).
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -65,6 +66,29 @@ export function createMcpServer(client = new PayAgentClient()): McpServer {
   })
   server.tool('my_invoices', 'Invoices you sent from your pay.agent link (needs PAYAGENT_KEY).', {}, async () => {
     try { return text(await client.invoices()) } catch (e) { return failure(e) }
+  })
+  server.tool('list_webhooks', 'Your webhook endpoints and the event types pay.agent sends (needs PAYAGENT_KEY).', {}, async () => {
+    try { return text(await client.webhooks()) } catch (e) { return failure(e) }
+  })
+  server.tool(
+    'create_webhook',
+    'Have pay.agent POST your link\'s events (payment.created, payment.paid, payment.expired, payment.failed, invoice.created, invoice.paid, invoice.overdue, invoice.cancelled) to a URL as signed CloudEvents (Standard Webhooks). Returns the signing secret. events: patterns like "payment.*"; omit for all. Needs PAYAGENT_KEY.',
+    { url: z.string().url(), events: z.array(z.string()).optional(), description: z.string().max(200).optional() },
+    async ({ url, events, description }: { url: string; events?: string[]; description?: string }) => {
+      try { return text(await client.addWebhook(url, events, description ?? '')) } catch (e) { return failure(e) }
+    },
+  )
+  server.tool('test_webhook', 'Send a webhook.test event to one of your endpoints now.', { id: z.string().min(1) }, async ({ id }: { id: string }) => {
+    try { return text(await client.testWebhook(id)) } catch (e) { return failure(e) }
+  })
+  server.tool('rotate_webhook_secret', 'Replace an endpoint\'s signing secret; the old one stops working.', { id: z.string().min(1) }, async ({ id }: { id: string }) => {
+    try { return text(await client.rotateWebhook(id)) } catch (e) { return failure(e) }
+  })
+  server.tool('delete_webhook', 'Remove a webhook endpoint.', { id: z.string().min(1) }, async ({ id }: { id: string }) => {
+    try { return text(await client.removeWebhook(id)) } catch (e) { return failure(e) }
+  })
+  server.tool('webhook_deliveries', 'Recent webhook deliveries, optionally for one endpoint.', { id: z.string().optional() }, async ({ id }: { id?: string }) => {
+    try { return text(await client.webhookLog(id)) } catch (e) { return failure(e) }
   })
   return server
 }
