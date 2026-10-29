@@ -99,11 +99,17 @@ describe('customer webhooks', () => {
     expect((await o.api('POST', '/api/v1/invoices', { to_email: 'ops@example.com', description: 'Hosting', amount_usd: 2, email: false })).status).toBe(201)
     t.cp.state.invoices.get('inv-1').status = 'paid'
     await Promise.all([t.req('/api/v1/invoices/inv-1'), t.req('/i/inv-1')])
+    // A second invoice, cancelled on CoinPay (its public view 404s): one invoice.cancelled.
+    expect((await o.api('POST', '/api/v1/invoices', { to_email: 'ops@example.com', description: 'Logo', amount_usd: 3, email: false })).status).toBe(201)
+    t.cp.state.invoices.get('inv-2').status = 'cancelled'
+    await Promise.all([t.req('/api/v1/invoices/inv-2'), t.req('/i/inv-2')])
+    await t.req('/i/inv-2')
 
     await new Promise((r) => setTimeout(r, 20))
-    expect(await t.agent.hooks.drain()).toBe(4)
+    expect(await t.agent.hooks.drain()).toBe(6)
     const evs = t.events()
-    expect(evs.map((e) => e.type)).toEqual(['payment.created', 'payment.paid', 'invoice.created', 'invoice.paid'])
+    expect(evs.map((e) => e.type)).toEqual(['payment.created', 'payment.paid', 'invoice.created', 'invoice.paid', 'invoice.created', 'invoice.cancelled'])
+    expect(evs[5]).toMatchObject({ subject: 'invoice:inv-2', data: { id: 'inv-2', status: 'cancelled' } })
     expect(evs[0]).toMatchObject({ subject: `payment:${pid}`, data: { id: pid, handle: 'alice', amount_usd: 12.5, status: 'pending', note: 'pizza', payer: 'Pat', session_id: 'cs_test1', checkout_url: 'https://cp.test/checkout/cs_test1', status_url: `https://pay.agent.pit.world/p/${pid}` } })
     expect(evs[0]!.data.payer_email).toBeUndefined()
     expect(evs[1]).toMatchObject({ data: { id: pid, status: 'confirmed', coin: 'usdc_sol', coinpay_payment_id: 'pay_cp_9' } })
@@ -115,7 +121,7 @@ describe('customer webhooks', () => {
     // Nothing more queued; the log says delivered.
     expect(await t.agent.hooks.drain()).toBe(0)
     const log: any = await (await o.api('GET', '/api/v1/webhooks/deliveries')).json()
-    expect(log.deliveries.map((d: any) => d.status)).toEqual(['delivered', 'delivered', 'delivered', 'delivered'])
+    expect(log.deliveries.map((d: any) => d.status)).toEqual(Array(6).fill('delivered'))
   })
 
   test('an expired checkout sends payment.expired; filters skip the rest; other owners hear nothing', async () => {

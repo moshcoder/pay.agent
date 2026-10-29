@@ -166,7 +166,7 @@ DELETE /api/v1/webhooks/:id</pre>
 <pre>POST /api/v1/invoices                      {"to_email": "pat@example.com", "description": "Logo", "amount_usd": 49,
                                             "due_date": "2026-11-30", "recurrence": "monthly", "email": true}
 GET  /api/v1/invoices                      yours, with the key
-GET  /api/v1/invoices/:id                  public: status (sent, paid, overdue), address, exact amount</pre>
+GET  /api/v1/invoices/:id                  public: status (sent, overdue, paid, cancelled), address, exact amount</pre>
 <pre>bunx @profullstack/payagent alice 5 --email=me@example.com  pay alice $5: prints the CoinPay checkout link
 bunx @profullstack/payagent status &lt;payment-id&gt;
 bunx @profullstack/payagent invoice pat@example.com 49 Logo --repeat=monthly
@@ -390,8 +390,9 @@ export function checkoutPage(ctx: Ctx, o: { payment: PaymentRow; payee: User | n
 export function invoicePage(ctx: Ctx, o: { invoice: InvoiceRow; live: InvoiceLive | null; payee: User | null; qr: string; emailed: boolean }): string {
   const i = o.invoice
   const paid = i.status === 'paid'
+  const cancelled = i.status === 'cancelled'
   const from = o.payee?.name || i.handle
-  const open = !paid && o.live?.address
+  const open = !paid && !cancelled && o.live?.address
   return layout({
     ctx,
     noindex: true,
@@ -402,7 +403,7 @@ export function invoicePage(ctx: Ctx, o: { invoice: InvoiceRow; live: InvoiceLiv
 <p class="amount">${usd(i.amountUsd)}</p><p>${esc(i.description)}</p>
 <p class="muted small">To ${esc(i.toName || 'you')}${i.dueDate ? ` · due ${esc(i.dueDate)}` : ''}${i.recurrence ? ` · repeats ${esc(i.recurrence)}` : ''}</p>
 <p><span class="status ${esc(i.status)}">${esc(i.status)}</span></p></section>
-${o.emailed ? '' : '<p class="note">The invoice is live, but CoinPay did not email it. Send them this page.</p>'}
+${o.emailed || cancelled ? '' : '<p class="note">The invoice is live, but CoinPay did not email it. Send them this page.</p>'}
 ${open ? `<div class="card">
   <p class="center">Send exactly</p>
   <p class="amount" style="font-size:1.6rem">${esc(o.live!.amountCrypto)} <span class="muted">${esc(coinName(i.coin))}</span></p>
@@ -411,7 +412,7 @@ ${open ? `<div class="card">
   <p class="center muted small">to this address</p>
   <div class="address"><code>${esc(o.live!.address)}</code><button class="copy" type="button" data-copy="${esc(o.live!.address)}">Copy</button></div>
   <p class="muted small center">In one payment, on the right network. Or <a href="${esc(i.payUrl)}">pay it on CoinPay</a>, where you can also download a PDF.</p>
-</div>` : paid ? `<div class="card center"><h2 class="ok">Paid. Thank you.</h2><p class="muted">CoinPay has the payment and forwards it to ${esc(from)}.</p></div>` : `<p class="center"><a class="btn big" href="${esc(i.payUrl)}">Pay on CoinPay</a></p>`}
+</div>` : cancelled ? `<div class="card center"><h2>Cancelled</h2><p class="muted">${esc(from)} cancelled this invoice. There is nothing to pay.</p></div>` : paid ? `<div class="card center"><h2 class="ok">Paid. Thank you.</h2><p class="muted">CoinPay has the payment and forwards it to ${esc(from)}.</p></div>` : `<p class="center"><a class="btn big" href="${esc(i.payUrl)}">Pay on CoinPay</a></p>`}
 <p class="center muted small">Paid in crypto through <a href="https://coinpayportal.com">CoinPay</a>. Want to send invoices too? <a href="/">Get a pay link</a></p>`,
   })
 }
