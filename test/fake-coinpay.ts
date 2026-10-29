@@ -1,6 +1,6 @@
 /** CoinPay, faked: OAuth, businesses, wallets, payments. */
 export function fakeCoinPay() {
-  const state = { businesses: [] as any[], accountWallets: [{ cryptocurrency: 'USDC_SOL', wallet_address: 'So1Payout' }] as any[], payments: new Map<string, any>(), refreshes: 0, lastPaymentBody: null as any, sessions: new Map<string, any>(), lastSessionBody: null as any, sessionAuth: [] as string[], invoices: new Map<string, any>(), clients: [] as any[], invoiceAuth: [] as string[], consents: [] as any[], businessWallets: new Map<string, any[]>(), paypal: true }
+  const state = { businesses: [] as any[], accountWallets: [{ cryptocurrency: 'USDC_SOL', wallet_address: 'So1Payout' }] as any[], payments: new Map<string, any>(), refreshes: 0, lastPaymentBody: null as any, sessions: new Map<string, any>(), lastSessionBody: null as any, sessionAuth: [] as string[], invoices: new Map<string, any>(), clients: [] as any[], invoiceAuth: [] as string[], consents: [] as any[], businessWallets: new Map<string, any[]>(), paypal: true, paypalStatus: 'forbidden' as 'forbidden' | 'ok', statusAuth: [] as string[] }
   const fetchImpl = (async (url: string | URL, init: RequestInit = {}) => {
     const u = new URL(String(url))
     const method = init.method ?? 'GET'
@@ -40,6 +40,13 @@ export function fakeCoinPay() {
       const p = { id: `pay${state.payments.size + 1}`, status: 'pending', payment_address: 'So1Deposit', amount_usd: body.amount_usd, amount_crypto: String(body.amount_usd), currency: body.currency, blockchain: 'USDC_SOL', expires_at: '2030-01-01T00:00:00Z' }
       state.payments.set(p.id, p)
       return json(201, { success: true, payment: p })
+    }
+    const ps = /^\/api\/paypal\/connect\/status\/([^/]+)$/.exec(path)
+    if (ps && method === 'GET') {
+      state.statusAuth.push(new Headers(init.headers).get('authorization') ?? '')
+      // CoinPay before 0.6.17 refused OAuth here.
+      if (state.paypalStatus === 'forbidden') return json(403, { success: false, error: 'This endpoint requires a dashboard session or an API key' })
+      return json(200, { success: true, connected: state.paypal })
     }
     if (path === '/api/checkout/sessions' && method === 'POST') {
       state.lastSessionBody = body

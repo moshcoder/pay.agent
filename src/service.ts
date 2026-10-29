@@ -264,6 +264,7 @@ export class PayAgent {
       const coins = input.stablecoins === true ? sortCoins(payableCoins(await payableBy(client, business.id))) : sortCoins(r.coins.filter((c) => COINS.some((k) => k.id === c)))
       this.store.setup(user.sub, { handle, mode: 'business', businessId: business.id, businessName: business.name, coins, webhookSecret: null })
       this.store.setAccepts(user.sub, accepts)
+      await this.refreshCard(client, user.sub, business.id)
       return { steps, coins }
     }
 
@@ -284,6 +285,7 @@ export class PayAgent {
     const coins = input.stablecoins === false ? sortCoins(r.coins.filter((c) => COINS.some((k) => k.id === c))) : sortCoins(payableCoins(await payableBy(client, r.business.id)))
     this.store.setup(user.sub, { handle, mode: 'wallet', businessId: r.business.id, businessName: r.business.name, coins, webhookSecret: r.webhookSecret })
     this.store.setAccepts(user.sub, accepts)
+    await this.refreshCard(client, user.sub, r.business.id)
     return { steps, coins }
   }
 
@@ -343,7 +345,22 @@ export class PayAgent {
     const client = await this.clientFor(user.sub)
     const coins = sortCoins(payableCoins(await payableBy(client, user.businessId)))
     this.store.setCoins(user.sub, coins)
+    await this.refreshCard(client, user.sub, user.businessId)
     return coins
+  }
+
+  /**
+   * Whether the business takes cards: PayPal connected on CoinPay. Read from
+   * CoinPay's PayPal status, which takes our OAuth token since CoinPay 0.6.17;
+   * a checkout still updates it too. Left as it was when CoinPay cannot say.
+   */
+  private async refreshCard(client: CoinPay, sub: string, businessId: string): Promise<void> {
+    try {
+      const status = (await client.call('GET', `/api/paypal/connect/status/${encodeURIComponent(businessId)}`)) as { success?: boolean; connected?: boolean } | null
+      if (status?.success === true && typeof status.connected === 'boolean') this.store.setCard(sub, status.connected)
+    } catch {
+      // Older CoinPay (403 to OAuth) or a blip: the next checkout tells us.
+    }
   }
 
   /**

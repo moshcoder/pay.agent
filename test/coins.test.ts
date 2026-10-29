@@ -118,6 +118,26 @@ describe('/api/v1/me/coins', () => {
     await expect(h.client().pay('nocard', 5, 'buyer@example.com')).rejects.toThrow(/No payment methods/)
   })
 
+  test('CoinPay 0.6.17+: card is known at claim from the PayPal status, before any checkout', async () => {
+    const h = headless()
+    h.cp.state.paypalStatus = 'ok'
+    const c = await h.client().claim({ handle: 'cardnow', coinpayToken: 'cp-session' })
+    expect((await h.client().user('cardnow')).card).toBe(true)
+    expect(h.cp.state.statusAuth.every((a) => a.startsWith('Bearer at-'))).toBe(true)
+
+    // PayPal disconnected on CoinPay: a recheck turns it off without a checkout.
+    h.cp.state.paypal = false
+    await h.client(c.api_key).setCoins({ recheck: true })
+    expect((await h.client().user('cardnow')).card).toBe(false)
+  })
+
+  test('older CoinPay refuses OAuth on the PayPal status: card stays unknown until a checkout', async () => {
+    const h = headless()
+    const c = await h.client().claim({ handle: 'oldcp', coinpayToken: 'cp-session' })
+    expect(c.handle).toBe('oldcp')
+    expect((await h.client().user('oldcp')).card).toBeNull()
+  })
+
   test('a pick with no wallet behind it is refused before CoinPay', async () => {
     const h = headless()
     const c = await h.client().claim({ handle: 'empty', coinpayToken: 'cp-session' })
