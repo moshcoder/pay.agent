@@ -66,7 +66,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .status::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
 .status.pending, .status.detected { color: var(--warn); }
 .status.confirmed, .status.forwarded, .status.completed, .status.paid { color: var(--ok); }
-.status.expired, .status.failed { color: var(--fail); }
+.status.expired, .status.failed, .status.cancelled { color: var(--fail); }
 .steps { list-style: none; padding: 0; margin: .5rem 0; }
 .steps li { padding: .35rem 0; border-bottom: 1px solid var(--line); }
 .steps li:last-child { border: 0; }

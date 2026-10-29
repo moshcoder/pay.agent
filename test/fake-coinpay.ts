@@ -73,6 +73,8 @@ export function fakeCoinPay() {
     if (ia) {
       const inv = state.invoices.get(ia[1]!)
       if (!inv) return json(404, { success: false, error: 'Invoice not found' })
+      // Like CoinPay: the public view shows only invoices that can be (or were) paid.
+      if (ia[2] === 'pay' && !['sent', 'overdue', 'paid'].includes(inv.status)) return json(404, { success: false, error: 'Invoice not available for payment' })
       if (ia[2] === 'pay') return json(200, { success: true, invoice: { ...inv, crypto_amount: '49.000000', payment_address: 'So1Invoice' } })
       inv.status = 'sent'
       inv.action = ia[2]

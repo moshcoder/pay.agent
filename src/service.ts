@@ -3,7 +3,7 @@
  * onboard them, and make and follow payments.
  */
 import { randomBytes } from 'node:crypto'
-import { COINS, CoinPay, onboard, payableBy, payableCoins, readWebhook, walletCode, type CheckoutSession, type OnboardStep } from '@profullstack/coinpay-onboard'
+import { COINS, CoinPay, CoinPayError, onboard, payableBy, payableCoins, readWebhook, walletCode, type CheckoutSession, type OnboardStep } from '@profullstack/coinpay-onboard'
 import { refresh as refreshTokens } from '@profullstack/coinpay-onboard/oauth'
 import { Webhooks, sqliteStore as webhookStore, type GuardOptions } from '@profullstack/webhooks'
 import { LockedError, TokenVault, legacyKeyMigrationEnabled } from './vault.js'
@@ -506,24 +506,32 @@ export class PayAgent {
   async followInvoice(id: string): Promise<{ invoice: InvoiceRow; live: InvoiceLive | null } | null> {
     const row = this.store.invoice(id)
     if (!row) return null
+    // Paid and cancelled never change again: no need to ask.
+    if (INVOICE_FINAL.has(row.status)) return { invoice: row, live: null }
+    let status: string
+    let inv: any = {}
     try {
       const body = await new CoinPay({ base: this.config.coinpayBase, ...(this.config.fetch ? { fetch: this.config.fetch } : {}) }).call<{ invoice: any }>('GET', `/api/invoices/${encodeURIComponent(id)}/pay`)
-      const inv = body.invoice ?? {}
-      const status = String(inv.status ?? row.status)
-      // Read again after the wait: two pages polling at once must not both report the change.
-      const before = this.store.invoice(id)!
-      if (status !== before.status) {
-        this.store.setInvoiceStatus(id, status)
-        const event = INVOICE_EVENTS[status.toLowerCase()]
-        if (event) this.hook(before.handle, event, this.invoiceData(this.store.invoice(id)!), `invoice:${id}`)
-      }
-      return {
-        invoice: this.store.invoice(id)!,
-        live: { status, amountCrypto: String(inv.crypto_amount ?? ''), address: String(inv.payment_address ?? ''), number: String(inv.invoice_number ?? row.number) },
-      }
-    } catch {
-      // CoinPay unreachable: show what we last knew.
-      return { invoice: row, live: null }
+      inv = body.invoice ?? {}
+      status = invoiceStatus(String(inv.status ?? row.status))
+    } catch (e) {
+      // The public view only shows sent, overdue and paid invoices. Every invoice we keep was sent,
+      // so a 404 ("not available for payment", or deleted) means the merchant cancelled it.
+      if (!(e instanceof CoinPayError && e.status === 404)) return { invoice: row, live: null } // CoinPay unreachable: show what we last knew.
+      status = 'cancelled'
+    }
+    // Read again after the wait: two pages polling at once must not both report the change.
+    const before = this.store.invoice(id)!
+    if (status !== before.status) {
+      this.store.setInvoiceStatus(id, status)
+      const event = INVOICE_EVENTS[status]
+      if (event) this.hook(before.handle, event, this.invoiceData(this.store.invoice(id)!), `invoice:${id}`)
+    }
+    const invoice = this.store.invoice(id)!
+    if (INVOICE_FINAL.has(status)) return { invoice, live: null }
+    return {
+      invoice,
+      live: { status, amountCrypto: String(inv.crypto_amount ?? ''), address: String(inv.payment_address ?? ''), number: String(inv.invoice_number ?? row.number) },
     }
   }
 
@@ -585,7 +593,11 @@ const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
 const clean = (v: unknown, max: number) => String(v ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max)
 
 /** Invoice statuses CoinPay reports, and the event each one sends. */
-const INVOICE_EVENTS: Record<string, string> = { paid: 'invoice.paid', overdue: 'invoice.overdue', cancelled: 'invoice.cancelled', canceled: 'invoice.cancelled' }
+const INVOICE_EVENTS: Record<string, string> = { paid: 'invoice.paid', overdue: 'invoice.overdue', cancelled: 'invoice.cancelled' }
+/** Invoice statuses that never change again. */
+export const INVOICE_FINAL = new Set(['paid', 'cancelled'])
+/** CoinPay's invoice status, spelled one way. */
+const invoiceStatus = (s: string) => (s.toLowerCase() === 'canceled' ? 'cancelled' : s.toLowerCase())
 
 export const FINAL = new Set(['confirmed', 'forwarded', 'completed', 'expired', 'failed', 'refunded'])
 export const PAID = new Set(['confirmed', 'forwarded', 'completed'])

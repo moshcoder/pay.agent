@@ -71,7 +71,7 @@ export function createMcpServer(client = new PayAgentClient()): McpServer {
       try { return text(await client.invoice(input)) } catch (e) { return failure(e) }
     },
   )
-  server.tool('invoice_status', 'An invoice\'s status (sent, paid, overdue) and, while open, the address and exact amount.', { invoice_id: z.string().min(1) }, async ({ invoice_id }: { invoice_id: string }) => {
+  server.tool('invoice_status', 'An invoice\'s status (sent, overdue, paid, cancelled) and, while open, the address and exact amount.', { invoice_id: z.string().min(1) }, async ({ invoice_id }: { invoice_id: string }) => {
     try { return text(await client.invoiceStatus(invoice_id)) } catch (e) { return failure(e) }
   })
   server.tool('my_invoices', 'Invoices you sent from your pay.agent link (needs PAYAGENT_KEY).', {}, async () => {

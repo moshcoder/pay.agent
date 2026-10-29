@@ -285,6 +285,18 @@ describe('terminal', () => {
     expect(await (await t.req('/i/inv-1')).text()).toContain('Paid. Thank you.')
     expect((await t.req('/i/nope')).status).toBe(404)
     expect(validHandle('invoices')).toBe('that one is taken')
+
+    // The merchant cancels inv-2 on CoinPay, whose public view then answers 404: it reads as cancelled, for good.
+    t.cp.state.invoices.get('inv-2').status = 'cancelled'
+    const gone: any = await (await t.req('/api/v1/invoices/inv-2')).json()
+    expect(gone).toMatchObject({ id: 'inv-2', status: 'cancelled' })
+    const page = await (await t.req('/i/inv-2')).text()
+    expect(page).toContain('cancelled this invoice')
+    expect(page).not.toContain('Pay on CoinPay')
+    expect(await (await t.req('/me')).text()).toContain('class="status cancelled"')
+    // Final: CoinPay is not asked again, even if the invoice comes back.
+    t.cp.state.invoices.get('inv-2').status = 'sent'
+    expect(((await (await t.req('/api/v1/invoices/inv-2')).json()) as any).status).toBe('cancelled')
   })
 })
 
