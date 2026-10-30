@@ -98,11 +98,11 @@ export function createApp(deps: Deps) {
   app.get('/health', (c) => c.json({ ok: true, version: VERSION }))
 
   // Static files: the stylesheet, the script, the icon, the Moshpit root.
-  const TYPES: Record<string, string> = { css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', svg: 'image/svg+xml', crt: 'application/x-x509-ca-cert' }
-  app.get('/:file{(style\\.css|pay\\.js|favicon\\.svg|moshpit-root-ca\\.crt)}', async (c) => {
+  const TYPES: Record<string, string> = { css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', svg: 'image/svg+xml', crt: 'application/x-x509-ca-cert', webmanifest: 'application/manifest+json; charset=utf-8', png: 'image/png' }
+  app.get('/:file{(style\\.css|pay\\.js|pwa-register\\.js|sw\\.js|manifest\\.webmanifest|icon-192\\.png|icon-512\\.png|icon-maskable-512\\.png|favicon\\.svg|moshpit-root-ca\\.crt)}', async (c) => {
     const name = c.req.param('file')
     const file = Bun.file(new URL(`../public/${name}`, import.meta.url))
-    return c.body(await file.arrayBuffer(), 200, { 'content-type': TYPES[name.split('.').pop()!]!, 'cache-control': 'public, max-age=86400' })
+    return c.body(await file.arrayBuffer(), 200, { 'content-type': TYPES[name.split('.').pop()!]!, 'cache-control': name === 'sw.js' ? 'no-cache' : 'public, max-age=86400' })
   })
 
   app.get('/', (c) => page(c, homePage(ctxOf(c))))

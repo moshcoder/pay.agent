@@ -58,6 +58,7 @@ function layout(o: LayoutOptions): string {
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#07090c">
+<link rel="manifest" href="/manifest.webmanifest">
 ${o.noindex ? '<meta name="robots" content="noindex">' : `<link rel="canonical" href="${esc(SITE + o.path)}">`}
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="pay.agent">
@@ -65,6 +66,7 @@ ${o.noindex ? '<meta name="robots" content="noindex">' : `<link rel="canonical" 
 <meta property="og:description" content="${esc(o.description)}">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="${STYLE_URL}">
+<script src="/pwa-register.js" defer></script>
 ${o.script ? `<script src="${SCRIPT_URL}" defer></script>` : ''}
 ${TRACKER}
 </head>
