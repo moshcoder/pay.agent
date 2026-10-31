@@ -7,7 +7,6 @@ import { readFileSync } from 'node:fs'
 import { COINS, type OnboardStep } from '@profullstack/coinpay-onboard'
 import type { PublicEndpoint } from '@profullstack/webhooks'
 import type { InvoiceRow, PaymentRow, User } from './db.js'
-import { pitFooter } from './pit-footer.js'
 import { ringFooter } from './ring-footer.js'
 import { RING_PLACEHOLDER } from './ring.js'
 import { coinName, DEFAULT_STABLES, offered, PAID, PAYPAL, RECURRENCES, WEBHOOK_EVENTS, type InvoiceLive } from './service.js'
@@ -85,7 +84,6 @@ ${o.ads ? adUnit() : ''}
 ${o.body}
 </main>
 ${ringFooter()}
-${pitFooter()}
 </body>
 </html>`
 }
