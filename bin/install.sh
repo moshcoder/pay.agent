@@ -47,7 +47,8 @@
 #                  `systemctl --user` unit with linger   (default: auto)
 #
 # Canonical copy: sh1pt packages/targets/deploy-ssh/bin/install.sh. cli-tools
-# vendors it; change it there first. This copy (from pit.world) adds ACCESS_LOG.
+# vendors it; change it there first. This copy (from pit.world) adds ACCESS_LOG,
+# and pay.agent's vault unlock handoff around the restart (scripts/vault-handoff.sh).
 
 set -euo pipefail
 
@@ -473,9 +474,26 @@ phase_activate() {
   write_unit
   if [ "$CHANGED" = 1 ]; then $SCTL daemon-reload; fi
   $SCTL enable "$UNIT" >/dev/null 2>&1
+  # pay.agent: the running process's in-memory unlocks go to the new one
+  # (scripts/vault-handoff.sh), held only in this shell variable, never on disk.
+  local handoff="" handoff_script="$SRC_DIR/scripts/vault-handoff.sh" handoff_ok=0
+  if [ -x "$handoff_script" ] && [ "$($SCTL is-active "$UNIT" 2>/dev/null || true)" = active ]; then
+    if handoff="$("$handoff_script" export)"; then handoff_ok=1
+    else warn "WARNING: could not export vault unlocks; after this restart every owner must sign in again to resume their pay link"
+    fi
+  fi
   log "restarting $UNIT ($SYSTEMD_MODE unit)"
   $SCTL restart "$UNIT"
-  health || exit 3
+  if ! health; then handoff=""; exit 3; fi
+  if [ "$handoff_ok" = 1 ]; then
+    local result
+    if result="$(printf '%s' "$handoff" | "$handoff_script" import)"; then
+      log "Vault unlocks handed to the new process: $result"
+    else
+      warn "WARNING: vault unlock handoff failed (${result:-no reply}); owners must sign in again to resume their pay links"
+    fi
+    handoff=""
+  fi
   write_nginx
   log "activate ok"
 }

@@ -45,10 +45,11 @@ bun install
 PAYAGENT_KEY=$(openssl rand -hex 32) PAYAGENT_COINPAY_CLIENT_ID=cp_… bun src/server.ts
 ```
 
-Settings: `PAYAGENT_KEY` (seals webhook secrets and sign-in state; it can NOT open anyone's CoinPay tokens: those are sealed under a per-sign-in key kept in memory only, so a restart pauses every link until its owner signs in again, and `/me` + `GET /api/v1/me` show `locked`), `LEGACY_KEY_MIGRATION` (`off` stops migrating pre-0.6 token copies; `sqlite3 pay-agent.db 'select count(*) from users where tokens is not null'` counts what is left), `PAYAGENT_COINPAY_CLIENT_ID`
+Settings: `PAYAGENT_KEY` (seals webhook secrets and sign-in state; it can NOT open anyone's CoinPay tokens: those are sealed under a per-sign-in key kept in memory only, so a restart with no handoff pauses every link until its owner signs in again, and `/me` + `GET /api/v1/me` show `locked`), `PAYAGENT_HANDOFF` (`off` disables the deploy handoff socket; `PAYAGENT_HANDOFF_SOCKET` moves it from `~/.payagent-vault/handoff.sock`), `LEGACY_KEY_MIGRATION` (`off` stops migrating pre-0.6 token copies; `sqlite3 pay-agent.db 'select count(*) from users where tokens is not null'` counts what is left), `PAYAGENT_COINPAY_CLIENT_ID`
 / `_SECRET` (a CoinPay OAuth client with scopes `openid profile email wallet:read merchant`),
 `PAYAGENT_DB` (SQLite path), `PORT` (8796), `COINPAY_BASE`, `PAYAGENT_WEBHOOK_ORIGIN`.
 
 Deploy: `bin/install.sh` (OpenInstall) on the box, vault `profullstack/pay-agent--prod`.
+Since 0.8.0 a deploy no longer pauses every pay link: `bin/install.sh` exports the running process's in-memory unlocks over a private Unix socket (`scripts/vault-handoff.sh`, keys in a shell variable only, never on disk) just before the restart and imports them once `/health` answers, keeping each original expiry (under a minute left is dropped). It logs `Vault unlocks handed to the new process` or a `WARNING`.
 
 MIT

@@ -21,6 +21,7 @@ import { FOOTER_SCRIPT_SRC, ringDescriptor, startRingFooterRefresh } from './rin
 import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from './ring.js'
 import { parseTtl } from '@profullstack/sealed-secrets'
 import { DEFAULT_STABLES, PAYPAL, PayAgent, SetupError, coinName, errorStatus, offered, parseAccepts, type Config, type InvoiceInput, type Recurrence } from './service.js'
+import { startHandoffSocket } from './handoff.js'
 import { VERSION } from './version.js'
 
 export { VERSION }
@@ -634,6 +635,8 @@ export function serve(options: { port?: number; hostname?: string } = {}) {
   const app = createApp({ store, key, config, agent })
   // Customer webhooks: deliveries waiting from before the restart go out now, then every 5 s.
   agent.hooks.start()
+  // Deploy handoff: bin/deploy.sh moves the in-memory unlocks to the new process, so a restart does not pause every link.
+  startHandoffSocket(agent.vault)
   const trustProxy = (env.PAYAGENT_TRUST_PROXY ?? '1') === '1'
   startRingRefresh()
   startRingFooterRefresh()
