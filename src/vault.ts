@@ -23,6 +23,11 @@ import type { Store, Tokens } from './db.js'
 /** Pay links have to keep working while the owner is away, so a sign-in unlocks for the longest allowed TTL unless they pick less. */
 export const SIGN_IN_TTL_SECONDS = UNLOCK_MAX_TTL_SECONDS
 
+/** An unlock handed over on deploy with less than this left is refused (the owner signs in again). */
+export const HANDOFF_MIN_REMAINING_SECONDS = 60
+
+export type HandoffSession = { sub: string; dek: string; expiresAt: number }
+
 export class LockedError extends Error {
   readonly locked = true
   constructor(message = 'locked: the owner of this pay link needs to sign in to pay.agent again to resume') {
@@ -37,6 +42,8 @@ export function legacyKeyMigrationEnabled(env: Record<string, string | undefined
 export class TokenVault {
   readonly sessions: UnlockStore
   private readonly sealer = createSealer({ app: 'payagent', scope: 'coinpay_tokens' })
+  /** Who is unlocked right now (UnlockStore cannot list its sessions), for the deploy handoff. */
+  private readonly unlocked = new Set<string>()
 
   constructor(
     private readonly store: Store,
@@ -44,7 +51,11 @@ export class TokenVault {
   ) {
     this.sessions = opts.sessions ?? new UnlockStore()
     this.sessions.onChange((sub, unlocked) => {
-      if (unlocked) return
+      if (unlocked) {
+        this.unlocked.add(sub)
+        return
+      }
+      this.unlocked.delete(sub)
       const handle = this.store.user(sub)?.handle
       ;(this.opts.log ?? console.log)(`pay.agent: ${handle ?? 'an account'} locked; its pay link pauses until the owner signs in again`)
     })
@@ -105,6 +116,47 @@ export class TokenVault {
   lock(sub: string): void {
     this.sessions.lock(sub)
     this.store.saveSealedTokens(sub, null)
+  }
+
+  /**
+   * Deploy handoff (src/handoff.ts): every live unlock with its ORIGINAL expiry.
+   * The keys are base64 copies for one JSON line over a private socket; never log them.
+   */
+  exportSessions(): HandoffSession[] {
+    const out: HandoffSession[] = []
+    for (const sub of [...this.unlocked]) {
+      const dek = this.sessions.get(sub)
+      const { expiresAt } = this.sessions.status(sub)
+      if (!dek || !expiresAt) continue
+      out.push({ sub, dek: Buffer.from(dek).toString('base64'), expiresAt: Date.parse(expiresAt) })
+    }
+    return out
+  }
+
+  /**
+   * Take one unlock from the previous process. Keeps its expiry (rounded DOWN
+   * to the second, so it is never extended), refuses one with under a minute
+   * left, one already unlocked here, and a key that does not open this
+   * person's sealed tokens. The caller wipes `dek`.
+   */
+  async importSession(sub: string, dek: Uint8Array, expiresAt: number, now: number = Date.now()): Promise<boolean> {
+    if (!sub || dek.length !== 32 || !Number.isFinite(expiresAt)) return false
+    const ttlSeconds = Math.floor((expiresAt - now) / 1000)
+    if (ttlSeconds < HANDOFF_MIN_REMAINING_SECONDS) return false
+    if (this.sessions.get(sub)) return false
+    const raw = this.store.sealedTokens(sub)
+    if (!raw) return false
+    try {
+      await this.sealer.unsealJson<Tokens>(dek, JSON.parse(raw) as CipherBlob, sub)
+    } catch {
+      return false
+    }
+    const { expiresAt: got } = this.sessions.unlock(sub, dek, ttlSeconds)
+    if (!got || Date.parse(got) > expiresAt) {
+      this.sessions.lock(sub)
+      return false
+    }
+    return true
   }
 
   status(sub: string): { unlocked: boolean; expiresAt: string | null } {
