@@ -1,0 +1,46 @@
+# Ship every merge to dev2. pay.agent runs as a root systemd unit from
+# /opt/pay.agent, so the deploy key may run exactly one command (ci-deploy on
+# dev2): sudo -n /usr/local/sbin/deploy-pay-agent, a root-owned script that
+# checks out origin/main and runs bin/install.sh (which hands owners' vault
+# unlocks to the new process, so links stay live).
+name: Deploy to dev2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-dev2
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Set up ssh
+        env:
+          SSH_KEY: ${{ secrets.DEV2_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEV2_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          DEV2_USER: ${{ secrets.DEV2_USER }}
+          DEV2_HOST: ${{ secrets.DEV2_HOST }}
+        run: ssh -o BatchMode=yes "$DEV2_USER@$DEV2_HOST" sudo -n /usr/local/sbin/deploy-pay-agent
+
+      - name: Verify the site answers
+        run: |
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://pay.agent.pit.world/health || true)
+            [ "$code" = 200 ] && { curl -s https://pay.agent.pit.world/health; exit 0; }
+            echo "attempt $i: $code"; sleep 10
+          done
+          echo "pay.agent never answered"; exit 1

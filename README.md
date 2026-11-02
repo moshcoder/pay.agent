@@ -56,4 +56,4 @@ MIT
 
 ## Deploy
 
-Merging to `main` deploys: root on dev2 runs `bin/auto-deploy.sh` every 2 minutes, which checks out the new `origin/main` and runs `bin/install.sh` (vault unlocks are handed to the new process). Log: `/var/log/pay-agent-deploy.log`.
+Merging to `main` deploys: GitHub Actions (`.github/workflows/deploy-dev2.yml`) runs `sudo -n /usr/local/sbin/deploy-pay-agent` on dev2 through a deploy key that `ci-deploy` locks to that one command. The script checks out `origin/main` and runs `bin/install.sh`, which hands owners' vault unlocks to the new process. Run it by hand with "Run workflow" (workflow_dispatch).
