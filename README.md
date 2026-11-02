@@ -53,3 +53,7 @@ Deploy: `bin/install.sh` (OpenInstall) on the box, vault `profullstack/pay-agent
 Since 0.8.0 a deploy no longer pauses every pay link: `bin/install.sh` exports the running process's in-memory unlocks over a private Unix socket (`scripts/vault-handoff.sh`, keys in a shell variable only, never on disk) just before the restart and imports them once `/health` answers, keeping each original expiry (under a minute left is dropped). It logs `Vault unlocks handed to the new process` or a `WARNING`.
 
 MIT
+
+## Deploy
+
+Merging to `main` deploys: root on dev2 runs `bin/auto-deploy.sh` every 2 minutes, which checks out the new `origin/main` and runs `bin/install.sh` (vault unlocks are handed to the new process). Log: `/var/log/pay-agent-deploy.log`.
