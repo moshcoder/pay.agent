@@ -16,6 +16,10 @@ export const REPO = 'https://github.com/moshcoder/pay.agent'
 const COINPAY = 'https://coinpayportal.com'
 
 /** crawlproof analytics: one async script on every page. */
+// WebMCP (@profullstack/webmcp): site_info, open_page and the annotated forms as tools for the AI agent
+// in the visitor's browser. Only the make-a-link form auto-submits (it just opens a page); paying and
+// invoicing always wait for the person.
+const WEBMCP = `<script type="module" data-webmcp src="https://cdn.jsdelivr.net/npm/@profullstack/webmcp@0/src/embed.js" data-pages='{"home":"/","my_link":"/me","invoice":"/me#invoice"}'></script>`
 const TRACKER = '<script data-site="88fcc3cd-2374-47da-8fbb-5cc2ae2e7499" src="https://crawlproof.com/stats.js" async></script>'
 
 /**
@@ -68,6 +72,7 @@ ${o.noindex ? '<meta name="robots" content="noindex">' : `<link rel="canonical" 
 <script src="/pwa-register.js" defer></script>
 ${o.script ? `<script src="${SCRIPT_URL}" defer></script>` : ''}
 ${TRACKER}
+${WEBMCP}
 </head>
 <body>
 ${RING_PLACEHOLDER}
@@ -272,9 +277,9 @@ ${missingStables.length ? `<form method="post" action="/me/stablecoins#coins">${
 <p class="muted small" id="cards">${now.card ? 'Cards are on: payers can pick PayPal on the checkout and pay by card as a guest.' : `Cards: connect PayPal to your CoinPay business <b>${esc(u.businessName ?? '')}</b> (CoinPay, Business, PayPal). Payers then pay by card through PayPal's guest checkout. <a href="/help#cards">How</a>`}</p></div>
 ${o.access ? accessCard(ctx, o.access) : ''}
 <div class="card"><h2>Ask for an amount</h2><p class="muted small">A link with the amount filled in.</p>
-<form method="get" action="/${esc(u.handle)}" class="row"><input name="amount" inputmode="decimal" placeholder="Amount (USD)"><input name="note" maxlength="140" placeholder="What for (optional)"><button class="btn">Make link</button></form></div>
+<form method="get" action="/${esc(u.handle)}" class="row" toolname="create_pay_link" tooldescription="Open the signed-in person's pay link with an amount in USD and an optional note filled in, ready to copy and share" toolautosubmit><input name="amount" inputmode="decimal" placeholder="Amount (USD)"><input name="note" maxlength="140" placeholder="What for (optional)"><button class="btn">Make link</button></form></div>
 <div class="card" id="invoice"><h2>Send an invoice</h2><p class="muted small">CoinPay emails them a pay link for the exact amount. Repeat it and CoinPay sends the next ones by itself.</p>
-<form method="post" action="/me/invoice"><input type="hidden" name="csrf" value="${esc(ctx.csrf)}">
+<form method="post" action="/me/invoice" toolname="send_invoice" tooldescription="Fill in an invoice (their email and name, what for, amount in USD, coin, due date, repeat); CoinPay emails it once the person presses Send invoice"><input type="hidden" name="csrf" value="${esc(ctx.csrf)}">
 <div class="row"><input name="to_email" type="email" required maxlength="254" placeholder="Their email" value="${esc(f.to_email ?? '')}"><input name="to_name" maxlength="80" placeholder="Their name (optional)" value="${esc(f.to_name ?? '')}"></div>
 <input name="description" required maxlength="500" placeholder="What for" value="${esc(f.description ?? '')}">
 <div class="row"><input name="amount" required inputmode="decimal" placeholder="Amount (USD)" value="${esc(f.amount ?? '')}"><select name="coin" aria-label="Paid in">${u.coins.map((c) => `<option value="${esc(c)}" ${f.coin === c ? 'selected' : ''}>${esc(coinName(c))}</option>`).join('')}</select></div>
@@ -332,7 +337,7 @@ export function payPage(ctx: Ctx, o: { payee: User; amount?: string; note?: stri
     path: `/${p.handle}`,
     body: `<section class="payee"><div class="avatar" aria-hidden="true">${esc(initial)}</div><h1>${esc(p.name || p.handle)}</h1><p class="muted">pay.agent/${esc(p.handle)}</p></section>
 ${o.paused && !o.error ? `<p class="note error">This pay link is paused until its owner signs in to pay.agent again.</p>` : ''}${o.error ? `<p class="note error">${esc(o.error)}</p>` : ''}
-<form method="post" action="/${esc(p.handle)}" class="card">
+<form method="post" action="/${esc(p.handle)}" class="card" toolname="pay_this_person" tooldescription="Fill in a payment to this pay.agent link (amount in USD, receipt email, note); the person reviews and presses pay on CoinPay">
   <label for="amount" class="center">Amount in USD</label>
   <input id="amount" class="amount-input" name="amount" required inputmode="decimal" placeholder="0" value="${esc(o.amount ?? '')}" autofocus>
   <label for="email">Your email <span class="muted">(for the receipt)</span></label>
