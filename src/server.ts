@@ -108,6 +108,13 @@ export function createApp(deps: Deps) {
   app.get('/', (c) => page(c, homePage(ctxOf(c))))
   app.get('/help', (c) => page(c, helpPage(ctxOf(c))))
 
+  // For crawlers: the public pages, named on the host that was asked (pay.agent on Moshpit, the relay otherwise).
+  const PUBLIC_PATHS = ['/', '/help']
+  app.get('/robots.txt', (c) => c.body(`User-agent: *\nDisallow: /me\nDisallow: /start\nDisallow: /auth/\nDisallow: /api/\nDisallow: /i/\nDisallow: /p/\nAllow: /\nSitemap: ${origin(c)}/sitemap.xml\n`, 200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=3600' }))
+  app.get('/sitemap.xml', (c) =>
+    c.body(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${PUBLIC_PATHS.map((p) => `<url><loc>${origin(c)}${p}</loc></url>`).join('')}</urlset>`, 200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'public, max-age=3600' }),
+  )
+
   // Sign in with CoinPay.
   app.get('/auth/start', (c) => {
     // Over plain http there is no callback CoinPay will send a code to: sign in through the relay.
