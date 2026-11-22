@@ -1,14 +1,23 @@
-# Ship every merge to dev2. pay.agent runs as a root systemd unit from
-# /opt/pay.agent, so the deploy key may run exactly one command (ci-deploy on
-# dev2): sudo -n /usr/local/sbin/deploy-pay-agent, a root-owned script that
-# checks out origin/main and runs bin/install.sh (which hands owners' vault
-# unlocks to the new process, so links stay live).
+# Ship every merge to dev2, where pay.agent runs from /opt/pay.agent.
+# PAY_DEPLOY_KEY is an anthony key on dev2 (root ssh is off since the 2026-11-20
+# lockdown) forced to `ci-deploy moshcoder/pay.agent`, which accepts exactly
+# `deploy-pay-agent <40-hex sha>` and runs `sudo -n /usr/local/bin/pay-agent-deploy <sha>`.
+# That root-owned script refuses a commit not on origin/main, moves the checkout to
+# it and runs HOST-PINNED copies of bin/install.sh, bin/install.conf and
+# scripts/vault-handoff.sh (bun install --ignore-scripts): editing those files here
+# does not change the deploy (update /usr/local/lib/pay-agent-deploy/ on dev2 as
+# root for that). The handoff still passes owners' vault unlocks to the new process.
+# PAY_DEPLOY_KEY may be the PEM or the whole file as one base64 line (that is how
+# the logicsrc vault profullstack/pay-agent--prod holds it).
 name: Deploy to dev2
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: deploy-dev2
@@ -17,24 +26,35 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The deploy queues in dev2's deploy-gate (3 slots) behind every other fleet deploy.
+    timeout-minutes: 75
     steps:
       - name: Set up ssh
         env:
-          SSH_KEY: ${{ secrets.DEV2_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.DEV2_KNOWN_HOSTS }}
+          SSH_KEY: ${{ secrets.PAY_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.PAY_KNOWN_HOSTS }}
         run: |
           install -d -m 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          # Accept the PEM block however a terminal copy mangled it (indented, CRLF,
+          # lines joined), or the whole file as one base64 line.
+          flat=$(printf '%s' "$SSH_KEY" | tr -d ' \t\r\n')
+          case "$flat" in
+            *-----BEGINOPENSSHPRIVATEKEY-----*)
+              body=${flat#*-----BEGINOPENSSHPRIVATEKEY-----}
+              body=${body%%-----ENDOPENSSHPRIVATEKEY-----*}
+              # threatcrush-disable-next-line secret-private-key  rebuilds the PAY_DEPLOY_KEY secret's armour at run time; no key material is committed
+              { echo '-----BEGIN OPENSSH PRIVATE KEY-----'; printf '%s\n' "$body" | fold -w 70; echo '-----END OPENSSH PRIVATE KEY-----'; } > ~/.ssh/id_ed25519 ;;
+            *) printf '%s' "$flat" | base64 -d > ~/.ssh/id_ed25519 ;;
+          esac
           chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 > /dev/null || { echo "PAY_DEPLOY_KEY is not a usable private key"; exit 1; }
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
       - name: Deploy
         env:
-          DEV2_USER: ${{ secrets.DEV2_USER }}
-          DEV2_HOST: ${{ secrets.DEV2_HOST }}
-        run: ssh -o BatchMode=yes "$DEV2_USER@$DEV2_HOST" sudo -n /usr/local/sbin/deploy-pay-agent
+          SHA: ${{ github.sha }}
+        run: ssh -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519 anthony@dev2.profullstack.com "deploy-pay-agent $SHA"
 
       - name: Verify the site answers
         run: |
@@ -44,3 +64,7 @@ jobs:
             echo "attempt $i: $code"; sleep 10
           done
           echo "pay.agent never answered"; exit 1
+
+      - name: Remove the key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
